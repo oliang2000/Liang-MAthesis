@@ -14,14 +14,17 @@ library(dplyr) # for data manipulation
 df <- st_read("data/station_boundaries/Police_bounds.shp")
 ```
 
+
 ```{r}
-#with st_buffer
+#without st_buffer
+#df[i,]$geometry%>%st_buffer(1)
+
 road_lengths <- list()
 
 for (i in 1:nrow(df)) {
   tryCatch({
     vehicular_road_length <- ohsome_elements_length(
-      boundary = df[i,]$geometry%>%st_buffer(2), filter = 'highway in ("motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary", 
+      boundary = df[i,]$geometry, filter = 'highway in ("motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary", 
       "secondary_link", "tertiary", "unclassified", "residential", "road", "living_street") and geometry:line', time = c("2024-01-01"), grouping = "boundary",
       return_value = "absolute") |> ohsome_post()
       road_lengths[[i]] <- vehicular_road_length$value
@@ -38,6 +41,6 @@ road_lengths[sapply(road_lengths, is.null)] <- NA
 road_lengths_df <- data.frame(road_length = unlist(road_lengths))
 
 df <- df %>% bind_cols(road_lengths_df)
-st_write(df, "data/station_boundaries/Police_bounds_.shp", delete_layer = TRUE)
+#st_write(df, "data/station_boundaries/Police_bounds_.shp", delete_layer = TRUE)
 st_write(df, "data/station_boundaries/Police_bounds_.gpkg", layer = "Police_bounds", delete_dsn = TRUE)
 ```
