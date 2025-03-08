@@ -63,6 +63,68 @@ intersections = intersections.reset_index()
 intersections = intersections.loc[intersections.groupby('block_id')['intersection_area'].idxmax()].reset_index()
 intersections.rename(columns={'Station': 'police_station'}, inplace=True)
 
+# Check the distance distribution
+intersections['police_station'] = intersections['police_station'].str.upper()
+intersections = intersections.to_crs('EPSG:4326')
+points_gdf = points_gdf.to_crs('EPSG:4326')
+
+# Merge intersections with points_gdf to get the location of the assigned police station
+merged_df = intersections.merge(points_gdf, left_on='police_station', right_on='COMPNT_NM', suffixes=('_block', '_station'))
+
+# Calculate the distance between each block and its assigned police station in meters
+from geopy.distance import geodesic
+merged_df['distance_to_station'] = merged_df.apply(
+    lambda row: geodesic(
+        (row['geometry_block'].centroid.y, row['geometry_block'].centroid.x), 
+        (row['geometry_station'].centroid.y, row['geometry_station'].centroid.x)
+    ).meters,
+    axis=1)
+# Plot k_complexity vs. distance to assigned police station
+plt.figure(figsize=(10, 6))
+plt.scatter(merged_df['distance_to_station'], merged_df['k_complexity'], alpha=0.6)
+plt.xlabel('Distance to Assigned Police Station (meters)')
+plt.ylabel('K-complexity')
+plt.title('K-complexity vs. Distance to Assigned Police Station')
+plt.grid(True)
+output_path = 'figs/corr_k_dist.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
+
+# Calculate the correlation between k_complexity and distance_to_station
+import statsmodels.api as sm
+from scipy import stats
+# Dependent variable
+y = merged_df['k_complexity']
+# Independent variable (with constant term added for the intercept calculation)
+X = sm.add_constant(merged_df['distance_to_station'])
+# Fit the regression model
+model = sm.OLS(y, X).fit()
+# Calculate the R-squared
+r_squared = model.rsquared
+# Calculate the Pearson correlation coefficient
+correlation = merged_df['k_complexity'].corr(merged_df['distance_to_station'])
+# Obtain the slope (coefficient of distance_to_station) and its 95% CI
+slope = model.params['distance_to_station']
+conf_int = model.conf_int().loc['distance_to_station']
+# Format the output
+print(f"R^2: {r_squared}")
+print(f"Correlation: {correlation}")
+print(f"Slope: {slope}")
+print(f"95% CI for slope: {conf_int[0]} to {conf_int[1]}")
+
+
+# Plot boxplots of k_complexity for each distance bin
+plt.figure(figsize=(10, 6))
+merged_df.boxplot(column='k_complexity', by='distance_bin', grid=False)
+plt.xlabel('Distance Bin')
+plt.ylabel('K-complexity')
+plt.title('K-complexity by Distance Bin')
+plt.suptitle('')  # Suppress default titles
+plt.grid(True)
+plt.xticks(rotation=45)
+plt.show()
+
+
 # Get building count from building level df
 # spatial_join_result = gpd.sjoin(df_bldg_lvl, final_gdf, how='left', op='within')
 # bldg_count = spatial_join_result.groupby('index_right').size()
@@ -116,14 +178,14 @@ final_gdf['building_density'] = final_gdf['building_count'] / final_gdf['block_a
 final_gdf['log10_building_density'] = np.log10(final_gdf['building_density'])
 final_gdf['total_crime_per_capita'] = final_gdf['5yr_avg'] / final_gdf['landscan_population']
 final_gdf['log10_total_crime_per_capita'] = np.log10(final_gdf['total_crime_per_capita'] + 1)
-final_gdf['log_landscan_population_density'] = np.log10(final_gdf['landscan_population'] / final_gdf['block_area_km2'])
+final_gdf['log10_landscan_population_density'] = np.log10(final_gdf['landscan_population'] / final_gdf['block_area_km2'])
 final_gdf.describe()
 
 # Plot histograms for each column
-columns = ['log10_building_density', 'k_complexity', 'log_landscan_population_density', 
-'road_length', 'log10_total_crime_per_capita', 'average_altitude']
+variables = ['log10_building_density', 'k_complexity', 'log10_landscan_population_density', 
+'road_length', 'average_altitude', 'log10_total_crime_per_capita']
 fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(15, 15))  # 3 rows, 2 columns to accommodate 5 histograms
-for i, col in enumerate(columns):
+for i, col in enumerate(variables):
     ax = axes[i//2, i%2]  # Calculate grid position
     ax.hist(final_gdf[col].dropna(), bins=30, edgecolor='k', alpha=0.7)
     ax.set_title(f'Histogram of {col}')
@@ -134,6 +196,19 @@ output_path = 'figs/descriptive_histogram.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
 
+# Plot map for each column
+fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(15, 15)) 
+for i, col in enumerate(variables):
+    ax = axes[i//2, i%2]  # Calculate grid position
+    final_gdf.plot(column=col, ax=ax, legend=True, cmap='viridis', 
+                   legend_kwds={'shrink': 0.5}, 
+                   missing_kwds={"color": "lightgrey", "edgecolor": "red", "hatch": "///"})
+    ax.set_title(f'Map of {col}')
+    ax.axis('off')
+plt.tight_layout()
+output_path = 'figs/descriptive_map.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
 
 
 
@@ -142,7 +217,7 @@ plt.show()
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
-features = ['log10_building_density', 'k_complexity', 'log_landscan_population', 'road_length', 'average_altitude']
+features = ['log10_building_density', 'k_complexity', 'log10_landscan_population_density', 'road_length', 'average_altitude']
 X = final_gdf[features]
 # Standardize features
 scaler = StandardScaler()
@@ -160,180 +235,83 @@ plt.title('Elbow Plot for K-Means Clustering')
 plt.xlabel('Number of Clusters (k)')
 plt.ylabel('Inertia')
 plt.xticks(k_range)
+output_path = 'figs/elbow_plot.png'
+plt.savefig(output_path, dpi=300)
 plt.grid(True)
 plt.show()
 
 
+# Choose 7 clusters
+kmeans = KMeans(n_clusters=7, random_state=42)
+final_gdf['cluster_knn7'] = kmeans.fit_predict(X_scaled)
 
-# %%
-# LISA
-# https://geographicdata.science/book/notebooks/07_local_autocorrelation.html
-
-from pysal.explore import esda
-from pysal.lib import weights
-w = weights.distance.KNN.from_dataframe(final_gdf, k=6)
-w.transform = "R" # Row-standardization
-lisa = esda.moran.Moran_Local(final_gdf["log10_total_crime_per_capita"], w)
-
-# plot
-from splot import esda as esdaplot
-# Set up figure and axes
-f, axs = plt.subplots(nrows=2, ncols=2, figsize=(12, 12))
-# Make the axes accessible with single indexing
-axs = axs.flatten()
-
-# Subplot 1 #
-# Choropleth of local statistics
-# Grab first axis in the figure
-ax = axs[0]
-final_gdf.assign(
-    Is=lisa.Is).plot(
-    column="Is",
-    cmap="plasma",
-    scheme="quantiles",
-    k=5,
-    edgecolor="white",
-    linewidth=0.1,
-    alpha=0.75,
-    legend=True,
-    ax=ax,)
-
-# Subplot 2 #
-# Quadrant categories
-# Grab second axis of local statistics
-ax = axs[1]
-# Plot Quadrant colors (note to ensure all polygons are assigned a
-# quadrant, we "trick" the function by setting significance level to
-# 1 so all observations are treated as "significant" and thus assigned
-# a quadrant color
-esdaplot.lisa_cluster(lisa, final_gdf, p=1, ax=ax)
-
-# Subplot 3 #
-# Significance map
-# Grab third axis of local statistics
-ax = axs[2]
-#
-# Find out significant observations
-labels = pd.Series(
-    1 * (lisa.p_sim < 0.05),  # Assign 1 if significant, 0 otherwise
-    index=final_gdf.index  # Use the index in the original data
-    # Recode 1 to "Significant and 0 to "Non-significant"
-).map({1: "Significant", 0: "Non-Significant"})
-# Assign labels to `db` on the fly
-final_gdf.assign(
-    cl=labels
-    # Plot choropleth of (non-)significant areas
-).plot(
-    column="cl",
-    categorical=True,
-    k=2,
-    cmap="Paired",
-    linewidth=0.1,
-    edgecolor="white",
-    legend=True,
-    ax=ax,
-)
-
-
-# Subplot 4 #
-# Cluster map
-# Grab second axis of local statistics
-ax = axs[3]
-# Plot Quadrant colors In this case, we use a 5% significance
-# level to select polygons as part of statistically significant
-# clusters
-esdaplot.lisa_cluster(lisa, final_gdf, p=0.05, ax=ax)
-
-# Figure styling #
-# Set title to each subplot
-for i, ax in enumerate(axs.flatten()):
-    ax.set_axis_off()
-    ax.set_title(
-        [
-            "Local Statistics",
-            "Scatterplot Quadrant",
-            "Statistical Significance",
-            "Moran Cluster Map",
-        ][i],
-        y=0,
-    )
-# Tight layout to minimize in-between white space
-f.tight_layout()
-
-# Display the figure
-plt.show()
-
-
-
-
-
-
-
-
-
-
-# %%
-# test 5 clusters
-# Plot the box plot of log10_total_crime_per_capita for each cluster
-kmeans = KMeans(n_clusters=5, random_state=42)
-final_gdf['cluster_knn5'] = kmeans.fit_predict(X_scaled)
-# Visualize
+# VISUALIZE
+# Color palette
 import matplotlib.patches as mpatches
-unique_clusters = sorted(final_gdf['cluster_knn5'].unique())
+unique_clusters = sorted(final_gdf['cluster_knn7'].unique())
 colors = plt.cm.tab20(range(len(unique_clusters)))[:len(unique_clusters)]
 cluster_colors = {cluster: colors[i % len(colors)] for i, cluster in enumerate(unique_clusters)}
 
-variables = [
-    'log10_building_density', 'k_complexity', 
-    'log_landscan_population_density', 'road_length', 
-    'average_altitude', 'log10_total_crime_per_capita']
+# Plot the box plot of all 5 dependent variables, 1 independent variable for all clusters
+palette = {str(cluster): color for cluster, color in cluster_colors.items()}
 fig, axes = plt.subplots(2, 3, figsize=(18, 12), tight_layout=True)
+# Plot each variable in a separate subplot
 for ax, var in zip(axes.flatten(), variables):
-    sns.boxplot(x='cluster_knn5', y=var, data=final_gdf, ax=ax, palette='Set2')
+    sns.boxplot(x='cluster_knn7', y=var, data=final_gdf, ax=ax, palette=palette)
     ax.set_title(f'Box Plot of {var.replace("_", " ").title()} for Each Cluster')
     ax.set_xlabel('Cluster')
     ax.set_ylabel(var.replace('_', ' ').title())
-#output_path = 'figs/knn5_cluster_boxplots.png'
-#plt.savefig(output_path, dpi=300)
+# Add a custom legend for clusters
+handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for cluster, color in cluster_colors.items()]
+# Use `bbox_transform` to position the legend outside the axes on the right side
+fig.legend(handles=handles, title='Clusters', loc='center left', bbox_to_anchor=(1.02, 0.5))
+output_path = 'figs/knn7_cluster_boxplots.png'
+plt.savefig(output_path, dpi=300, bbox_inches='tight')
 plt.show()
+
+# Bar plot for counts
+df_count = final_gdf.groupby('cluster_knn7').size().reset_index().rename(columns={0: 'count'})
+fig, ax = plt.subplots()
+sns.barplot(x='cluster_knn7', y="count", data=df_count, ax=ax, palette=palette)
+ax.set_xlabel('Cluster')
+ax.set_ylabel('Count')
 
 # One map
 fig, ax = plt.subplots(figsize=(10, 10))
-final_gdf['color'] = final_gdf['cluster_knn5'].map(cluster_colors)
+final_gdf['color'] = final_gdf['cluster_knn7'].map(cluster_colors)
 final_gdf.plot(color=final_gdf['color'], ax=ax)
 # Generate custom legend
-handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for color, cluster in zip(colors[:6], unique_clusters)]
+handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for color, cluster in zip(colors, unique_clusters)]
 # Title and labels
 ax.legend(handles=handles, title="Clusters", loc='lower right')
-ax.set_title('Clustered Polygons')
+ax.set_title('KNN Clustering of South African Police Station Areas')
 ax.set_xlabel('Longitude')
 ax.set_ylabel('Latitude')
-#output_path = 'figs/knn5_result1.png'
-#plt.savefig(output_path, dpi=300)
+output_path = 'figs/knn7_map.png'
+plt.savefig(output_path, dpi=300)
 plt.show()
 
 # Clusters highlighted individually
-# Create a 2x3 grid of subplots
-fig, axes = plt.subplots(2, 3, figsize=(18, 12), sharex=True, sharey=True)
-axes = axes.flatten()
-# Plot each cluster in its own subplot
-for i, cluster in enumerate(unique_clusters):
-    ax = axes[i]
-    final_gdf.plot(color='lightgray', ax=ax)  # Plot all polygons in light gray
-    final_gdf[final_gdf['cluster_knn5'] == cluster].plot(color=cluster_colors[cluster], ax=ax)  # Highlight the current cluster
-    ax.set_title(f'Cluster {cluster}')
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-# Hide any unused subplots
-for j in range(i + 1, len(axes)):
-    axes[j].axis('off')
-plt.tight_layout()
-#output_path = 'figs/knn5_result2.png'
-#plt.savefig(output_path, dpi=300)
-plt.show()
+# fig, axes = plt.subplots(2, 4, figsize=(18, 12), sharex=True, sharey=True)
+# axes = axes.flatten()
+# # Plot each cluster in its own subplot
+# for i, cluster in enumerate(unique_clusters):
+#     ax = axes[i]
+#     final_gdf.plot(color='lightgray', ax=ax)  # Plot all polygons in light gray
+#     final_gdf[final_gdf['cluster_knn5'] == cluster].plot(color=cluster_colors[cluster], ax=ax)  # Highlight the current cluster
+#     ax.set_title(f'Cluster {cluster}')
+#     ax.set_xlabel('Longitude')
+#     ax.set_ylabel('Latitude')
+# # Hide any unused subplots
+# for j in range(i + 1, len(axes)):
+#     axes[j].axis('off')
+# plt.tight_layout()
+# output_path = 'figs/knn7_result2.png'
+# plt.savefig(output_path, dpi=300)
+# plt.show()
 
 # Summary stats
-cluster_summary = final_gdf.groupby('cluster_knn5')[features].agg(['mean', 'std'])
+cluster_summary = final_gdf.groupby('cluster_knn7')[features].agg(['mean', 'std'])
 print(cluster_summary)
 
 # Check the category (urban / non-urban) of each cluster
@@ -345,12 +323,12 @@ summary_table = intersections.groupby(['cluster_knn5', 'class_urban_hierarchy'])
 
 
 # %%
-# LISA
+# LISA: local moran's i
 # https://geographicdata.science/book/notebooks/07_local_autocorrelation.html
 
 from pysal.explore import esda
 from pysal.lib import weights
-w = weights.distance.KNN.from_dataframe(final_gdf, k=6)
+w = weights.distance.KNN.from_dataframe(final_gdf, k=7)
 w.transform = "R" # Row-standardization
 lisa = esda.moran.Moran_Local(final_gdf["log10_total_crime_per_capita"], w)
 
@@ -365,18 +343,7 @@ axs = axs.flatten()
 # Choropleth of local statistics
 # Grab first axis in the figure
 ax = axs[0]
-final_gdf.assign(
-    Is=lisa.Is).plot(
-    column="Is",
-    cmap="plasma",
-    scheme="quantiles",
-    k=5,
-    edgecolor="white",
-    linewidth=0.1,
-    alpha=0.75,
-    legend=True,
-    ax=ax,)
-
+final_gdf.assign(Is=lisa.Is).plot(column="Is", cmap="plasma", scheme="quantiles", k=5, edgecolor="white", linewidth=0.1, alpha=0.75, legend=True, ax=ax)
 # Subplot 2 #
 # Quadrant categories
 # Grab second axis of local statistics
@@ -391,7 +358,6 @@ esdaplot.lisa_cluster(lisa, final_gdf, p=1, ax=ax)
 # Significance map
 # Grab third axis of local statistics
 ax = axs[2]
-#
 # Find out significant observations
 labels = pd.Series(
     1 * (lisa.p_sim < 0.05),  # Assign 1 if significant, 0 otherwise
@@ -399,21 +365,7 @@ labels = pd.Series(
     # Recode 1 to "Significant and 0 to "Non-significant"
 ).map({1: "Significant", 0: "Non-Significant"})
 # Assign labels to `db` on the fly
-final_gdf.assign(
-    cl=labels
-    # Plot choropleth of (non-)significant areas
-).plot(
-    column="cl",
-    categorical=True,
-    k=2,
-    cmap="Paired",
-    linewidth=0.1,
-    edgecolor="white",
-    legend=True,
-    ax=ax,
-)
-
-
+final_gdf.assign(cl=labels).plot(column="cl",categorical=True,k=2,cmap="Paired",linewidth=0.1,edgecolor="white",legend=True,ax=ax,)
 # Subplot 4 #
 # Cluster map
 # Grab second axis of local statistics
@@ -422,7 +374,6 @@ ax = axs[3]
 # level to select polygons as part of statistically significant
 # clusters
 esdaplot.lisa_cluster(lisa, final_gdf, p=0.05, ax=ax)
-
 # Figure styling #
 # Set title to each subplot
 for i, ax in enumerate(axs.flatten()):
@@ -436,29 +387,10 @@ for i, ax in enumerate(axs.flatten()):
         ][i],
         y=0,
     )
-# Tight layout to minimize in-between white space
 f.tight_layout()
-
-# Display the figure
 plt.show()
 
 
-#%% T-TEST
-import pandas as pd
-from scipy.stats import ttest_ind
-
-# Assuming 'final_gdf' is your DataFrame and is already loaded
-
-# Extracting the series of interest
-cluster_3 = final_gdf[final_gdf['cluster_knn5'] == 3]['log10_total_crime_per_capita']
-cluster_2 = final_gdf[final_gdf['cluster_knn5'] == 2]['log10_total_crime_per_capita']
-
-# Performing an independent two-sample t-test
-t_stat, p_value = ttest_ind(cluster_3, cluster_2, equal_var=False)
-
-print(f"t-statistic: {t_stat}")
-print(f"p-value: {p_value}")
-# %%
 
 
 
@@ -478,84 +410,5 @@ print(f"p-value: {p_value}")
 
 
 
-
-
-
-# %%
-# Choose to have 6 clusters
-# Plot the box plot of log10_total_crime_per_capita for each cluster
-kmeans = KMeans(n_clusters=6, random_state=42)
-final_gdf['cluster'] = kmeans.fit_predict(X_scaled)
-# Visualize
-import matplotlib.patches as mpatches
-unique_clusters = sorted(final_gdf['cluster'].unique())
-colors = plt.cm.tab20(range(len(unique_clusters)))[:len(unique_clusters)]
-cluster_colors = {cluster: colors[i % len(colors)] for i, cluster in enumerate(unique_clusters)}
-# Examine KNN results
-# Dependent variable
-# sns.boxplot(x ='cluster', hue='cluster', y='log10_total_crime_per_capita', data=final_gdf, palette=list(colors), legend = False)
-# plt.title('Box Plot of Crime for Each Cluster, 2019')
-# plt.xlabel('Cluster')
-# plt.ylabel('log10 (total_crime_per_capita)')
-# output_path = 'figs/knn6_cluster_crime_histogram.png'
-# plt.savefig(output_path, dpi=300)
-# plt.show()
-
-variables = [
-    'log10_building_density', 'k_complexity', 
-    'log_landscan_population', 'road_length', 
-    'average_altitude', 'log10_total_crime_per_capita']
-fig, axes = plt.subplots(2, 3, figsize=(18, 12), tight_layout=True)
-for ax, var in zip(axes.flatten(), variables):
-    sns.boxplot(x='cluster', y=var, data=final_gdf, ax=ax, palette='Set2')
-    ax.set_title(f'Box Plot of {var.replace("_", " ").title()} for Each Cluster')
-    ax.set_xlabel('Cluster')
-    ax.set_ylabel(var.replace('_', ' ').title())
-output_path = 'figs/knn6_cluster_boxplots.png'
-plt.savefig(output_path, dpi=300)
-plt.show()
-
-# One map
-fig, ax = plt.subplots(figsize=(10, 10))
-final_gdf['color'] = final_gdf['cluster'].map(cluster_colors)
-final_gdf.plot(color=final_gdf['color'], ax=ax)
-# Generate custom legend
-handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for color, cluster in zip(colors[:6], unique_clusters)]
-# Title and labels
-ax.legend(handles=handles, title="Clusters", loc='lower right')
-ax.set_title('Clustered Polygons')
-ax.set_xlabel('Longitude')
-ax.set_ylabel('Latitude')
-output_path = 'figs/knn6_result1.png'
-plt.savefig(output_path, dpi=300)
-plt.show()
-
-# Clusters highlighted individually
-# Create a 2x3 grid of subplots
-fig, axes = plt.subplots(2, 3, figsize=(18, 12), sharex=True, sharey=True)
-axes = axes.flatten()
-# Plot each cluster in its own subplot
-for i, cluster in enumerate(unique_clusters):
-    ax = axes[i]
-    final_gdf.plot(color='lightgray', ax=ax)  # Plot all polygons in light gray
-    final_gdf[final_gdf['cluster'] == cluster].plot(color=cluster_colors[cluster], ax=ax)  # Highlight the current cluster
-    ax.set_title(f'Cluster {cluster}')
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-# Hide any unused subplots
-for j in range(i + 1, len(axes)):
-    axes[j].axis('off')
-plt.tight_layout()
-output_path = 'figs/knn6_result2.png'
-plt.savefig(output_path, dpi=300)
-plt.show()
-
-# Summary stats
-cluster_summary = final_gdf.groupby('cluster')[features].agg(['mean', 'std'])
-print(cluster_summary)
-
-# Check the category (urban / non-urban) of each cluster
-intersections = intersections.merge(final_gdf[['cluster', 'Station']], left_on='police_station', right_on='Station', how='left')
-summary_table = intersections.groupby(['cluster', 'class_urban_hierarchy']).size().unstack(fill_value=0)
 
 
