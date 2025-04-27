@@ -11,11 +11,7 @@ import seaborn as sns
 
 
 
-#%%
-# Read in data, make then EPSG 4326
-# From Michael Howe-Ely
-df_crime = pd.read_excel('Crime Stats for South Africa.xlsx')
-gdf_crime = gpd.GeoDataFrame(df_crime, geometry=gpd.points_from_xy(df_crime.Longitude, df_crime.Latitude)).set_crs(epsg=4326, inplace=True)
+#%% Read in data, make then EPSG 4326
 
 # From MNP
 # block level
@@ -23,14 +19,13 @@ gdf_block_info = gpd.read_parquet("data/MNP/ZAF_geodata.parquet").set_crs(epsg=4
 # building level
 df_bldg_lvl = gpd.read_parquet("data/MNP/buildings_polygons_ZAF.parquet").set_crs(epsg=4326, inplace=True)
 
-# Police station data from SAPS
-#bounds_shapefile_path = "data/station_boundaries/Police_bounds.shp"
-#bounds_gdf = gpd.read_file(bounds_shapefile_path).set_crs(epsg=4326, inplace=True)
+# From SAPS
+# Police station data 
 bounds_gdf = gpd.read_file("data/station_boundaries/Police_bounds_.gpkg")
 points_shapefile_path = "data/station_points/Police_points.shp"
 points_gdf = gpd.read_file(points_shapefile_path).set_crs(epsg=4326, inplace=True)
-# Crime data from SAPS
-# https://www.saps.gov.za/services/crimestats.php, Annual Crime Statistics 2023/2024
+# Crime data
+#https://www.saps.gov.za/services/older_crimestats.php, Annual Crime Statistics 2023/2024
 crime_excelfile_path = 'data/2023-2024 _Annual_Financial year_WEB1.xlsx'
 crime_df = pd.read_excel(crime_excelfile_path, sheet_name=1, skiprows=2, usecols='E:S', nrows=45435)
 # 3 stations are non-match: 
@@ -38,19 +33,18 @@ crime_df = pd.read_excel(crime_excelfile_path, sheet_name=1, skiprows=2, usecols
 # Non-matching values from df.Station: {'DINGLETON'}
 
 
- 
+
 
 
 #%% CLEAN DATA AND JOIN
 # Get average total crime for recent 5 years
 sum_crime_df = crime_df.groupby(['Station', 'District', 'Province'], as_index=False).sum(numeric_only=True)
-sum_crime_df['5yr_avg'] = sum_crime_df[['2018-2019', '2019-2020', '2020-2021', '2021-2022', '2022-2023']].mean(axis=1)
+sum_crime_df['5yr_avg'] = sum_crime_df[['2018-2019', '2019-2020', '2020-2021', '2021-2022', '2022-2023']].mean(axis=1) # april 2022 to march 2023
 
 # Join crime stats to police station zones for geometry
 bounds_gdf['COMPNT_NM'] = bounds_gdf['COMPNT_NM'].str.upper()
 sum_crime_df['Station'] = sum_crime_df['Station'].str.upper()
 final_df = pd.merge(sum_crime_df, bounds_gdf[['COMPNT_NM', 'geometry', 'road_length']], left_on='Station', right_on='COMPNT_NM')
-final_df['Station'] = final_df['Station'].str.capitalize()
 final_df = final_df.drop('COMPNT_NM', axis=1)
 final_gdf = gpd.GeoDataFrame(final_df, geometry='geometry').to_crs("EPSG:4326")
 
@@ -62,15 +56,13 @@ intersections['intersection_area'] = intersections.geometry.area
 intersections = intersections.reset_index()
 intersections = intersections.loc[intersections.groupby('block_id')['intersection_area'].idxmax()].reset_index()
 intersections.rename(columns={'Station': 'police_station'}, inplace=True)
-
-# Check the distance distribution
 intersections['police_station'] = intersections['police_station'].str.upper()
 intersections = intersections.to_crs('EPSG:4326')
 points_gdf = points_gdf.to_crs('EPSG:4326')
-
 # Merge intersections with points_gdf to get the location of the assigned police station
 merged_df = intersections.merge(points_gdf, left_on='police_station', right_on='COMPNT_NM', suffixes=('_block', '_station'))
 
+# Check the distance distribution
 # Calculate the distance between each block and its assigned police station in meters
 from geopy.distance import geodesic
 merged_df['distance_to_station'] = merged_df.apply(
@@ -89,21 +81,12 @@ plt.grid(True)
 output_path = 'figs/corr_k_dist.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
-
 # Calculate the correlation between k_complexity and distance_to_station
-import statsmodels.api as sm
-from scipy import stats
-# Dependent variable
 y = merged_df['k_complexity']
-# Independent variable (with constant term added for the intercept calculation)
 X = sm.add_constant(merged_df['distance_to_station'])
-# Fit the regression model
 model = sm.OLS(y, X).fit()
-# Calculate the R-squared
 r_squared = model.rsquared
-# Calculate the Pearson correlation coefficient
 correlation = merged_df['k_complexity'].corr(merged_df['distance_to_station'])
-# Obtain the slope (coefficient of distance_to_station) and its 95% CI
 slope = model.params['distance_to_station']
 conf_int = model.conf_int().loc['distance_to_station']
 # Format the output
@@ -113,23 +96,228 @@ print(f"Slope: {slope}")
 print(f"95% CI for slope: {conf_int[0]} to {conf_int[1]}")
 
 
-# Plot boxplots of k_complexity for each distance bin
-plt.figure(figsize=(10, 6))
-merged_df.boxplot(column='k_complexity', by='distance_bin', grid=False)
-plt.xlabel('Distance Bin')
-plt.ylabel('K-complexity')
-plt.title('K-complexity by Distance Bin')
-plt.suptitle('')  # Suppress default titles
-plt.grid(True)
-plt.xticks(rotation=45)
-plt.show()
-
-
 # Get building count from building level df
 # spatial_join_result = gpd.sjoin(df_bldg_lvl, final_gdf, how='left', op='within')
 # bldg_count = spatial_join_result.groupby('index_right').size()
 # final_gdf['building_count'] = 0
 # final_gdf.loc[building_count.index, 'bldg_count'] = bldg_count.values
+
+
+
+# %% CAUSAL ANALYSIS
+
+#######################
+### CAUSAL ANALYSIS ###
+#######################
+
+from statsmodels.tsa.stattools import grangercausalitytests
+
+# Data
+# Get building counts
+western_cape_gdf = final_gdf[final_gdf["Province"] == "Western Cape"]
+# Save the GeoDataFrame as a shapefile
+#output_file_path = "data/police_areas_westerncape.shp"
+#western_cape_gdf.to_file(output_file_path, driver="ESRI Shapefile")
+western_cape_building_growth = pd.read_csv("data/westerncape_bldg_footprint.csv")
+# clean tables
+# crime table: april 2022 to march 2023 is "2022-2023", rename this to crime_2022
+western_cape_gdf = western_cape_gdf.rename(columns=lambda x: f"crime_{x.split('-')[0]}" if '-' in x else x)
+# building count table: calculate growth rates by year
+for year in range(2016, 2023):
+    western_cape_building_growth[f'growth_{year+1}'] = (western_cape_building_growth[f'count_{year + 1}'] / western_cape_building_growth[f'count_{year}']) - 1
+# merge
+# contains: crime 2014-2023, growth 2017 to 2023
+merged_data = western_cape_gdf.merge(western_cape_building_growth, on='Station')
+
+# calculate causality
+granger_results_crime_to_growth = []
+granger_results_growth_to_crime = []
+for station in merged_data['Station'].unique():
+    for i in range(2):
+        station_data = merged_data[merged_data['Station'] == station]
+        station_data = station_data[[col for col in station_data.columns if col.startswith('crime_') or col.startswith('growth_')]]
+        melted_data = pd.melt(station_data, var_name='Year', value_name='Value')
+        melted_data[['Type', 'Year']] = melted_data['Year'].str.split('_', expand=True)
+        pivoted_data = melted_data.pivot(index='Year', columns='Type', values='Value').reset_index().fillna(0)
+        pivoted_data['Year'] = pivoted_data['Year'].astype(int)
+        if i:
+            # Perform Granger Causality test for crime -> growth for lags 1, 2, and 3
+            lag_range = 2
+            test_result = grangercausalitytests(pivoted_data[pivoted_data["Year"]>=2016][["crime", "growth"]], lag_range, verbose = False)
+            for lag in range(lag_range):
+                lag = lag + 1
+                granger_results_crime_to_growth.append([station, test_result[lag][0]['ssr_ftest'][0], test_result[lag][0]['ssr_ftest'][1], lag])
+        else:
+            # Perform Granger Causality test for growth -> crime for lags 1, 2, and 3
+            lag = 1
+            test_result = grangercausalitytests(pivoted_data[pivoted_data["Year"]>=2017][["growth", "crime"]], lag, verbose = False)
+            granger_results_growth_to_crime.append([station, test_result[lag][0]['ssr_ftest'][0], test_result[lag][0]['ssr_ftest'][1], lag])
+df_granger_crime_to_growth = pd.DataFrame(granger_results_crime_to_growth, columns=['Station', 'f_statistic', 'p_value', 'lag'])
+df_granger_growth_to_crime = pd.DataFrame(granger_results_growth_to_crime, columns=['Station', 'f_statistic', 'p_value', 'lag'])
+
+# Plot histograms of p_value for each lag
+for lag in df_granger_crime_to_growth['lag'].unique():
+    subset = df_granger_crime_to_growth[df_granger_crime_to_growth['lag'] == lag]
+    plt.figure(figsize=(8, 4))
+    plt.hist(subset['p_value'], bins=50, edgecolor='black', alpha=0.7)
+    plt.title(f'Histogram of p_value for lag {lag}, Crime -> Growth')
+    plt.xlabel('p_value')
+    plt.ylabel('Frequency')
+    plt.grid(axis='y', alpha=0.75)
+    plt.show()
+
+# Plot histograms of p_value for each lag
+for lag in df_granger_growth_to_crime['lag'].unique():
+    subset = df_granger_growth_to_crime[df_granger_growth_to_crime['lag'] == lag]
+    plt.figure(figsize=(8, 4))
+    plt.hist(subset['p_value'], bins=50, edgecolor='black', alpha=0.7)
+    plt.title(f'Histogram of p_value for lag {lag}, Growth -> Crime')
+    plt.xlabel('p_value')
+    plt.ylabel('Frequency')
+    plt.grid(axis='y', alpha=0.75)
+    plt.show()
+
+df_granger_crime_to_growth[(df_granger_crime_to_growth['lag'] == 1) & (df_granger_crime_to_growth['p_value'] < 0.05)]
+df_granger_growth_to_crime[(df_granger_growth_to_crime['lag'] == 1) & (df_granger_growth_to_crime['p_value'] < 0.05)]
+
+
+
+
+
+# THE SAME ANALYSIS FOR KwaZulu-Natal
+# Get building counts
+KwaZulu_Natal_gdf = final_gdf[final_gdf["Province"] == "KwaZulu-Natal"]
+# Save the GeoDataFrame as a shapefile
+# KwaZulu_Natal_gdf.to_file("data/police_areas_KN.shp", driver="ESRI Shapefile")
+KN_building_growth = pd.read_csv("data/KN_bldg_footprint.csv")
+# clean tables
+# crime table: april 2022 to march 2023 is "2022-2023", rename this to crime_2022
+KwaZulu_Natal_gdf = KwaZulu_Natal_gdf.rename(columns=lambda x: f"crime_{x.split('-')[0]}" if '-' in x else x)
+# building count table: calculate growth rates by year
+for year in range(2016, 2023):
+    KN_building_growth[f'growth_{year+1}'] = (KN_building_growth[f'count_{year + 1}'] / KN_building_growth[f'count_{year}']) - 1
+# merge
+# contains: crime 2014-2023, growth 2017 to 2023
+merged_data = KwaZulu_Natal_gdf.merge(KN_building_growth, on='Station')
+
+# calculate causality
+granger_results_crime_to_growth = []
+granger_results_growth_to_crime = []
+for station in merged_data['Station'].unique():
+    for i in range(2):
+        station_data = merged_data[merged_data['Station'] == station]
+        station_data = station_data[[col for col in station_data.columns if col.startswith('crime_') or col.startswith('growth_')]]
+        melted_data = pd.melt(station_data, var_name='Year', value_name='Value')
+        melted_data[['Type', 'Year']] = melted_data['Year'].str.split('_', expand=True)
+        pivoted_data = melted_data.pivot(index='Year', columns='Type', values='Value').reset_index().fillna(0)
+        pivoted_data['Year'] = pivoted_data['Year'].astype(int)
+        if i:
+            # Perform Granger Causality test for crime -> growth for lags 1, 2, and 3
+            lag_range = 2
+            test_result = grangercausalitytests(pivoted_data[pivoted_data["Year"]>=2016][["crime", "growth"]], lag_range, verbose = False)
+            for lag in range(lag_range):
+                lag = lag + 1
+                granger_results_crime_to_growth.append([station, test_result[lag][0]['ssr_ftest'][0], test_result[lag][0]['ssr_ftest'][1], lag])
+        else:
+            # Perform Granger Causality test for growth -> crime for lags 1, 2, and 3
+            lag = 1
+            test_result = grangercausalitytests(pivoted_data[pivoted_data["Year"]>=2017][["growth", "crime"]], lag, verbose = False)
+            granger_results_growth_to_crime.append([station, test_result[lag][0]['ssr_ftest'][0], test_result[lag][0]['ssr_ftest'][1], lag])
+df_granger_crime_to_growth = pd.DataFrame(granger_results_crime_to_growth, columns=['Station', 'f_statistic', 'p_value', 'lag'])
+df_granger_growth_to_crime = pd.DataFrame(granger_results_growth_to_crime, columns=['Station', 'f_statistic', 'p_value', 'lag'])
+
+# Plot histograms of p_value for each lag
+for lag in df_granger_crime_to_growth['lag'].unique():
+    subset = df_granger_crime_to_growth[df_granger_crime_to_growth['lag'] == lag]
+    plt.figure(figsize=(8, 4))
+    plt.hist(subset['p_value'], bins=50, edgecolor='black', alpha=0.7)
+    plt.title(f'Histogram of p_value for lag {lag}, Crime -> Growth')
+    plt.xlabel('p_value')
+    plt.ylabel('Frequency')
+    plt.grid(axis='y', alpha=0.75)
+    plt.show()
+
+# Plot histograms of p_value for each lag
+for lag in df_granger_growth_to_crime['lag'].unique():
+    subset = df_granger_growth_to_crime[df_granger_growth_to_crime['lag'] == lag]
+    plt.figure(figsize=(8, 4))
+    plt.hist(subset['p_value'], bins=50, edgecolor='black', alpha=0.7)
+    plt.title(f'Histogram of p_value for lag {lag}, Growth -> Crime')
+    plt.xlabel('p_value')
+    plt.ylabel('Frequency')
+    plt.grid(axis='y', alpha=0.75)
+    plt.show()
+
+df_granger_crime_to_growth[(df_granger_crime_to_growth['lag'] == 1) & (df_granger_crime_to_growth['p_value'] < 0.05)] #4
+df_granger_growth_to_crime[(df_granger_growth_to_crime['lag'] == 1) & (df_granger_growth_to_crime['p_value'] < 0.05)] #8
+
+
+# Update station names to camel case
+station_names = {
+    "MID ILLOVO": "Mid Illovo",
+    "KWAMBONAMBI": "Kwambonambi"
+}
+# Set font size for all text
+plt.rcParams.update({'font.size': 12})
+for station in ["MID ILLOVO", "KWAMBONAMBI"]:
+    station_data = merged_data[merged_data['Station'] == station]
+    station_data = station_data[[col for col in station_data.columns if col.startswith('crime_') or col.startswith('growth_')]]
+    melted_data = pd.melt(station_data, var_name='Year', value_name='Value')
+    melted_data[['Type', 'Year']] = melted_data['Year'].str.split('_', expand=True)
+    pivoted_data = melted_data.pivot(index='Year', columns='Type', values='Value').reset_index().fillna(0)
+    pivoted_data['Year'] = pivoted_data['Year'].astype(int)
+    pivoted_data = pivoted_data[pivoted_data["Year"] > 2016]
+    # Plotting
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+    ax1.plot(pivoted_data['Year'], pivoted_data['crime'], marker='o', color='blue')
+    ax1.set_title('Crime Over Years', fontsize=16)
+    ax1.set_ylabel('Crime', fontsize=14)
+    ax1.grid(True)
+    ax2.plot(pivoted_data['Year'], pivoted_data['growth'], marker='x', color='green')
+    ax2.set_title('Growth Over Years', fontsize=16)
+    ax2.set_xlabel('Year', fontsize=14)
+    ax2.set_ylabel('Growth', fontsize=14)
+    ax2.grid(True)
+    fig.suptitle(f'Crime and Growth Trend for {station_names[station]}', fontsize=18)
+    plt.tight_layout()
+    plt.savefig(f'figs/crime_growth_{station_names[station]}.png')
+    plt.show()
+
+
+# overall distribution of growth
+years = [str(year) for year in range(2017, 2024)]
+growth_columns = [f'growth_{year}' for year in years]
+growth_data = merged_data[growth_columns]
+# Set the figure size
+plt.figure(figsize=(12, 8))
+growth_data.plot(kind='box', grid=True, ax=plt.gca())
+plt.title('Growth Distribution from 2017 to 2023')
+plt.xlabel('Year')
+plt.ylabel('Growth')
+plt.show()
+
+growth_data = merged_data[['Station'] + growth_columns]
+# Set the figure size
+plt.figure(figsize=(12, 8))
+for station in growth_data['Station'].unique():
+    station_data = growth_data[growth_data['Station'] == station]
+    plt.plot(years, station_data[growth_columns].values.flatten(), marker='o', color='blue', alpha=0.5)
+plt.title('Growth from 2017 to 2023 for Each Station')
+plt.xlabel('Year')
+plt.ylabel('Growth')
+plt.grid(True)
+plt.show()
+
+
+
+
+
+
+#%%
+import rasterio
+import rasterio.mask
+from rasterio.mask import mask
+from rasterio.plot import show
 
 # Calculate block agg stats
 def weighted_mean(data, weights):
@@ -141,14 +329,10 @@ aggregation_functions = {
     'landscan_population': 'sum',
     'on_network_street_length_meters': 'sum',
     'off_network_street_length_meters': 'sum'}
-aggregated_block_info = intersections.groupby('police_station').agg(aggregation_functions)
-final_gdf = final_gdf.merge(aggregated_block_info, left_on='Station', right_index=True, how='left')
+aggregated_block_info = intersections.groupby('police_station').agg(aggregation_functions).reset_index()
+final_gdf = final_gdf.merge(aggregated_block_info, left_on='Station', right_on = "police_station", how='left') #right_index=True
 
 # Get average altitude 
-import rasterio
-import rasterio.mask
-from rasterio.mask import mask
-from rasterio.plot import show
 # Load the DEM data from the .tif file
 dem_file = 'data/DEM.tif' # From OpenTopography Copernicus 90M
 with rasterio.open(dem_file) as src:
@@ -169,7 +353,33 @@ final_gdf['average_altitude'] = final_gdf['geometry'].apply(
     lambda geom: calculate_average_altitude(geom, dem_data, dem_transform))
 
 
+# %% EDA
+######################################
+######################################
 
+# plot detail of k-complexity in cape town
+# minx, miny = 18.25, -34.17
+# maxx, maxy = 18.75, -33.88
+minx, miny = 18.50, -34.10
+maxx, maxy = 18.78, -33.95
+bbox = (minx, miny, maxx, maxy)
+
+# Filter the GeoDataFrame using clip
+gdf_cape_town = gpd.clip(gdf_block_info, mask=bbox)
+
+# Plot the GeoDataFrame
+fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+gdf_cape_town.plot(column='k_complexity', ax=ax, legend=True, cmap='Greens',
+                   legend_kwds={'label': "K-Complexity",
+                                'orientation': "vertical",
+                                'shrink': 0.5,
+                                'aspect': 15})
+plt.title('Blocks in Cape Town Colored by K-Complexity')
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+output_path = 'figs/cape_town_kcomp.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
 
 
 #%% DATA TRANSFORMATION + DESCRIPTIVE STATS
@@ -184,9 +394,9 @@ final_gdf.describe()
 # Plot histograms for each column
 variables = ['log10_building_density', 'k_complexity', 'log10_landscan_population_density', 
 'road_length', 'average_altitude', 'log10_total_crime_per_capita']
-fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(15, 15))  # 3 rows, 2 columns to accommodate 5 histograms
+fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 8))  # 3 rows, 2 columns to accommodate 5 histograms
 for i, col in enumerate(variables):
-    ax = axes[i//2, i%2]  # Calculate grid position
+    ax = axes[i//3, i%3]  # Calculate grid position
     ax.hist(final_gdf[col].dropna(), bins=30, edgecolor='k', alpha=0.7)
     ax.set_title(f'Histogram of {col}')
     ax.set_xlabel(col)
@@ -196,11 +406,79 @@ output_path = 'figs/descriptive_histogram.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
 
-# Plot map for each column
-fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(15, 15)) 
-for i, col in enumerate(variables):
+
+# k-complexity map
+fig, ax = plt.subplots(1, 1, figsize=(10, 12))
+final_gdf.plot(column="k_complexity", ax=ax, legend=True, cmap='Blues', 
+                   legend_kwds={'shrink': 0.5}, 
+                   missing_kwds={"color": "lightgrey", "edgecolor": "red", "hatch": "///"})
+plt.title('Police Areas Colored by Population Weighted K-Complexity')
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+output_path = 'figs/kcomp_map_wholecountry.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
+
+
+# crime rate map
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from matplotlib.patches import Rectangle
+# Define the bounding boxes
+bbox_main = (16, -35.5, 32, -22) #Whole Country
+bbox_cape_town = (18, -34.5, 19.3, -33.7)
+bbox_johannesburg = (27.5, -26.5, 28.2, -25.9)
+#https://en.m.wikipedia.org/wiki/File:Greater_Johannesburg_OpenStreetMap_small.svg
+# Create the figure and main axis
+fig, ax_main = plt.subplots(1, 1, figsize=(15, 15))
+# Plot the main GeoDataFrame with the full map
+gpd.clip(final_gdf[final_gdf["landscan_population"] > 1000], mask=bbox_main).plot(
+    column='log10_total_crime_per_capita', ax=ax_main, cmap='Blues',
+    vmin=0, vmax=0.3, legend=False)
+ax_main.set_title('South Africa Police Areas Colored by log10(Crime Rate), averaged 2018-2022', fontsize=20)
+ax_main.set_xlabel('Longitude', fontsize=15)
+ax_main.set_ylabel('Latitude', fontsize=15)
+# Add gray bounding boxes for Cape Town and Johannesburg
+rect_cape_town = Rectangle((bbox_cape_town[0], bbox_cape_town[1]),
+                           bbox_cape_town[2] - bbox_cape_town[0],
+                           bbox_cape_town[3] - bbox_cape_town[1],
+                           linewidth=2, edgecolor='gray', facecolor='none')
+rect_johannesburg = Rectangle((bbox_johannesburg[0], bbox_johannesburg[1]),
+                              bbox_johannesburg[2] - bbox_johannesburg[0],
+                              bbox_johannesburg[3] - bbox_johannesburg[1],
+                              linewidth=2, edgecolor='gray', facecolor='none')
+ax_main.add_patch(rect_cape_town)
+ax_main.add_patch(rect_johannesburg)
+# Create inset axes for Cape Town outside of the main map (left side)
+ax_cape_town = inset_axes(ax_main, width="90%", height="90%", loc='center left',
+                          bbox_to_anchor=(-0.75, 0.0, 0.45, 0.45), bbox_transform=ax_main.transAxes)
+gpd.clip(final_gdf[final_gdf["landscan_population"] > 1000], mask=bbox_cape_town).plot(
+    column='log10_total_crime_per_capita', ax=ax_cape_town, cmap='Blues', vmin=0, vmax=0.3, legend=False)
+ax_cape_town.set_title('Cape Town', fontsize=15)
+# Create inset axes for Johannesburg outside of the main map (right side)
+ax_johannesburg = inset_axes(ax_main, width="90%", height="90%", loc='center right',
+                             bbox_to_anchor=(1.3, 0.5, 0.45, 0.45), bbox_transform=ax_main.transAxes)
+gpd.clip(final_gdf[final_gdf["landscan_population"] > 1000], mask=bbox_johannesburg).plot(
+    column='log10_total_crime_per_capita', ax=ax_johannesburg, cmap='Blues', vmin=0, vmax=0.3, legend=False)
+ax_johannesburg.set_title('Johannesburg', fontsize=14)
+# Create a thicker shared colorbar for the entire figure with larger font
+cax = inset_axes(ax_main, width="5%", height="100%", loc='lower left',
+                 bbox_to_anchor=(1.05, 0.0, 0.05, 1.0), bbox_transform=ax_main.transAxes, borderpad=0)
+sm = plt.cm.ScalarMappable(cmap='Blues', norm=plt.Normalize(vmin=0, vmax=0.3))
+sm.set_array([])
+cbar = fig.colorbar(sm, cax=cax)
+cbar.set_label('K-Complexity', size=20)
+cbar.ax.tick_params(labelsize=15)
+output_path = 'figs/crime_map_wholecountry.png'
+plt.savefig(output_path, dpi=300, bbox_inches='tight' )
+plt.show()
+
+
+# Map for the rest of the four columns
+
+fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(20, 15)) 
+for i, col in enumerate(['log10_landscan_population_density', 'log10_building_density', 'road_length', 'average_altitude']):
     ax = axes[i//2, i%2]  # Calculate grid position
-    final_gdf.plot(column=col, ax=ax, legend=True, cmap='viridis', 
+    final_gdf.plot(column=col, ax=ax, legend=True, cmap='Blues', 
                    legend_kwds={'shrink': 0.5}, 
                    missing_kwds={"color": "lightgrey", "edgecolor": "red", "hatch": "///"})
     ax.set_title(f'Map of {col}')
@@ -209,9 +487,6 @@ plt.tight_layout()
 output_path = 'figs/descriptive_map.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
-
-
-
 
 # %% KNN with individual features
 from sklearn.cluster import KMeans
@@ -269,24 +544,24 @@ output_path = 'figs/knn7_cluster_boxplots.png'
 plt.savefig(output_path, dpi=300, bbox_inches='tight')
 plt.show()
 
-# Bar plot for counts
-df_count = final_gdf.groupby('cluster_knn7').size().reset_index().rename(columns={0: 'count'})
-fig, ax = plt.subplots()
-sns.barplot(x='cluster_knn7', y="count", data=df_count, ax=ax, palette=palette)
-ax.set_xlabel('Cluster')
-ax.set_ylabel('Count')
-
-# One map
-fig, ax = plt.subplots(figsize=(10, 10))
+# map
+fig, axs = plt.subplots(1, 2, figsize=(12, 5))
 final_gdf['color'] = final_gdf['cluster_knn7'].map(cluster_colors)
-final_gdf.plot(color=final_gdf['color'], ax=ax)
+final_gdf.plot(color=final_gdf['color'], ax=axs[0])
 # Generate custom legend
 handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for color, cluster in zip(colors, unique_clusters)]
 # Title and labels
-ax.legend(handles=handles, title="Clusters", loc='lower right')
-ax.set_title('KNN Clustering of South African Police Station Areas')
-ax.set_xlabel('Longitude')
-ax.set_ylabel('Latitude')
+axs[0].legend(handles=handles, title="Clusters", loc='upper left')
+axs[0].set_title('KNN Clustering of South African Police Station Areas')
+axs[0].set_xlabel('Longitude')
+axs[0].set_ylabel('Latitude')
+# Bar plot for counts
+df_count = final_gdf.groupby('cluster_knn7').size().reset_index().rename(columns={0: 'count'})
+sns.barplot(x='cluster_knn7', y="count", data=df_count, ax=axs[1], palette=palette)
+axs[1].set_xlabel('Cluster')
+axs[1].set_ylabel('Count')
+axs[1].set_title("Distribution of Area Units Across Clusters")
+# save and show plot
 output_path = 'figs/knn7_map.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
@@ -321,6 +596,30 @@ summary_table = intersections.groupby(['cluster_knn5', 'class_urban_hierarchy'])
 
 
 
+# %%
+# Check crime numbers by category by cluster
+years = ['2018-2019', '2019-2020', '2020-2021', '2021-2022', '2022-2023']
+crime_df['average_crime'] = crime_df.loc[:, years].mean(axis=1)
+merged_df = pd.merge(final_gdf, crime_df, on='Station')
+merged_df['per_capita_crime'] = merged_df['average_crime'] / merged_df['landscan_population']
+grouped_df = merged_df.groupby(['cluster_knn7', 'Crime_Category'])['per_capita_crime'].mean().unstack()
+# Plot
+fig, axes = plt.subplots(nrows=7, ncols=1, figsize=(8, 20), sharex=True)
+for i, cluster in enumerate(grouped_df.index):
+    axes[i].bar(grouped_df.columns, grouped_df.loc[cluster])
+    axes[i].set_title(f'Cluster {cluster}')
+    axes[i].set_ylim(0, 0.05)
+    axes[i].set_ylabel('Per Capita Crime Rate (2018-2022)')
+    axes[i].set_xticklabels(grouped_df.columns, rotation=90)
+axes[-1].set_xlabel('Crime Category')
+plt.tight_layout()
+output_path = 'figs/crime_by_cat_by_cluster.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
+
+
+
+
 
 # %%
 # LISA: local moran's i
@@ -343,7 +642,8 @@ axs = axs.flatten()
 # Choropleth of local statistics
 # Grab first axis in the figure
 ax = axs[0]
-final_gdf.assign(Is=lisa.Is).plot(column="Is", cmap="plasma", scheme="quantiles", k=5, edgecolor="white", linewidth=0.1, alpha=0.75, legend=True, ax=ax)
+final_gdf.assign(Is=lisa.Is).plot(column="Is", cmap="plasma", scheme="quantiles", k=7, 
+                                  edgecolor="white", linewidth=0.1, alpha=0.75, legend=True, ax=ax)
 # Subplot 2 #
 # Quadrant categories
 # Grab second axis of local statistics
@@ -353,7 +653,6 @@ ax = axs[1]
 # 1 so all observations are treated as "significant" and thus assigned
 # a quadrant color
 esdaplot.lisa_cluster(lisa, final_gdf, p=1, ax=ax)
-
 # Subplot 3 #
 # Significance map
 # Grab third axis of local statistics
@@ -374,41 +673,186 @@ ax = axs[3]
 # level to select polygons as part of statistically significant
 # clusters
 esdaplot.lisa_cluster(lisa, final_gdf, p=0.05, ax=ax)
-# Figure styling #
 # Set title to each subplot
-for i, ax in enumerate(axs.flatten()):
-    ax.set_axis_off()
-    ax.set_title(
-        [
-            "Local Statistics",
-            "Scatterplot Quadrant",
-            "Statistical Significance",
-            "Moran Cluster Map",
-        ][i],
-        y=0,
-    )
+for i, ax in enumerate(axs.flatten()): 
+    ax.set_axis_off() 
+ax.set_title( [ "Local Statistics", "Scatterplot Quadrant", "Statistical Significance", "Moran Cluster Map", ][i], y=0, )
 f.tight_layout()
 plt.show()
 
 
 
+# %%
+#https://pysal.org/notebooks/lib/libpysal/weights.html
+
+from libpysal.weights import Queen, Rook, KNN
+
+fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+
+# Plot 1: Rook neighbors
+w_rook = Rook.from_dataframe(final_gdf)
+w_rook.transform = "R"  # Row-standardization
+lisa_rook = esda.moran.Moran_Local(final_gdf["log10_total_crime_per_capita"], w_rook)
+esdaplot.lisa_cluster(lisa_rook, final_gdf, p=0.05, ax=axs[0])
+axs[0].set_title('LISA cluster map, Rook Neighbors')
+
+# Plot 2: Queen neighbors
+w_queen = Queen.from_dataframe(final_gdf)
+w_queen.transform = "R"  # Row-standardization
+lisa_queen = esda.moran.Moran_Local(final_gdf["log10_total_crime_per_capita"], w_queen)
+esdaplot.lisa_cluster(lisa_queen, final_gdf, p=0.05, ax=axs[1])
+axs[1].set_title('LISA cluster map, Queen Neighbors')
+
+# Plot 3: KNN neighbors
+w_knn =x KNN.from_dataframe(final_gdf, k=5)
+w_knn.transform = "R"  # Row-standardization
+lisa_knn = esda.moran.Moran_Local(final_gdf["log10_total_crime_per_capita"], w_knn)
+esdaplot.lisa_cluster(lisa_knn, final_gdf, p=0.05, ax=axs[2])
+axs[2].set_title('LISA cluster map, KNN 5 Neighbors')
+
+# Adjust layout
+fig.tight_layout()
+output_path = 'figs/hhll_cluster7_combined.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
 
 
 
 
+# Check within cluster 2
+
+from scipy.stats import linregress
+# Ensure final_gdf is defined and contains the required columns
+final_gdf_cluster2 = final_gdf[final_gdf["cluster_knn7"] == 2]
+x = final_gdf_cluster2['k_complexity']
+y = final_gdf_cluster2['log10_total_crime_per_capita']
+# Normalize both variables
+x_normalized = (x - np.mean(x)) / np.std(x)
+y_normalized = (y - np.mean(y)) / np.std(y)
+# Perform linear regression on normalized data
+slope, intercept, r_value, p_value, std_err = linregress(x_normalized, y_normalized)
+line = slope * x_normalized + intercept
+# Calculate 95% confidence interval for the slope
+t_value = 1.96
+ci = t_value * std_err
+# Create the scatter plot and regression line
+fig, ax = plt.subplots()
+ax.scatter(x_normalized, y_normalized, label='Data Points')
+ax.plot(x_normalized, line, color='red', label='Linear Regression')
+# Prepare text box content
+textstr = '\n'.join((
+    r'$R^2=%.2f$' % (r_value**2, ),
+    r'$r=%.2f$' % (r_value, ),
+    r'$slope=%.2f \pm %.2f$' % (slope, ci)))
+# Place a text box in upper right in axes coordinates
+props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+ax.text(0.95, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+        verticalalignment='top', horizontalalignment='right', bbox=props)
+# Add labels and legend
+ax.set_xlabel('Normalized k_complexity')
+ax.set_ylabel('Normalized log10_total_crime_per_capita')
+# Show the plot
+output_path = 'figs/xxx.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
 
 
 
+# %% KNN sensitivity analysis
+# 8 clusters
+kmeans = KMeans(n_clusters=8, random_state=42)
+final_gdf['cluster_knn8'] = kmeans.fit_predict(X_scaled)
+
+# VISUALIZE
+# Color palette
+unique_clusters = sorted(final_gdf['cluster_knn8'].unique())
+colors = plt.cm.tab20(range(len(unique_clusters)))[:len(unique_clusters)]
+cluster_colors = {cluster: colors[i % len(colors)] for i, cluster in enumerate(unique_clusters)}
+# Plot the box plot of all 5 dependent variables, 1 independent variable for all clusters
+palette = {str(cluster): color for cluster, color in cluster_colors.items()}
+fig, axes = plt.subplots(2, 3, figsize=(18, 12), tight_layout=True)
+# Plot each variable in a separate subplot
+for ax, var in zip(axes.flatten(), variables):
+    sns.boxplot(x='cluster_knn8', y=var, data=final_gdf, ax=ax, palette=palette)
+    ax.set_title(f'Box Plot of {var.replace("_", " ").title()} for Each Cluster')
+    ax.set_xlabel('Cluster')
+    ax.set_ylabel(var.replace('_', ' ').title())
+# Add a custom legend for clusters
+handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for cluster, color in cluster_colors.items()]
+# Use `bbox_transform` to position the legend outside the axes on the right side
+fig.legend(handles=handles, title='Clusters', loc='center left', bbox_to_anchor=(1.02, 0.5))
+output_path = 'figs/knn8_cluster_boxplots.png'
+plt.savefig(output_path, dpi=300, bbox_inches='tight')
+plt.show()
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+# One map
+final_gdf['color'] = final_gdf['cluster_knn8'].map(cluster_colors)
+final_gdf.plot(color=final_gdf['color'], ax=axs[0])
+# Generate custom legend
+handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for color, cluster in zip(colors, unique_clusters)]
+# Title and labels
+axs[0].legend(handles=handles, title="Clusters", loc='lower right')
+axs[0].set_title('KNN Clustering of South African Police Station Areas')
+axs[0].set_xlabel('Longitude')
+axs[0].set_ylabel('Latitude')
+# Bar plot for counts
+df_count = final_gdf.groupby('cluster_knn8').size().reset_index().rename(columns={0: 'count'})
+sns.barplot(x='cluster_knn8', y="count", data=df_count, ax=axs[1], palette=palette)
+axs[1].set_xlabel('Cluster')
+axs[1].set_ylabel('Count')
+# save and show plot
+output_path = 'figs/knn8_map.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
 
 
 
+# 6 clusters
+kmeans = KMeans(n_clusters=6, random_state=42)
+final_gdf['cluster_knn6'] = kmeans.fit_predict(X_scaled)
 
+# VISUALIZE
+# Color palette
+unique_clusters = sorted(final_gdf['cluster_knn6'].unique())
+colors = plt.cm.tab20(range(len(unique_clusters)))[:len(unique_clusters)]
+cluster_colors = {cluster: colors[i % len(colors)] for i, cluster in enumerate(unique_clusters)}
+# Plot the box plot of all 5 dependent variables, 1 independent variable for all clusters
+palette = {str(cluster): color for cluster, color in cluster_colors.items()}
+fig, axes = plt.subplots(2, 3, figsize=(18, 12), tight_layout=True)
+# Plot each variable in a separate subplot
+for ax, var in zip(axes.flatten(), variables):
+    sns.boxplot(x='cluster_knn6', y=var, data=final_gdf, ax=ax, palette=palette)
+    ax.set_title(f'Box Plot of {var.replace("_", " ").title()} for Each Cluster')
+    ax.set_xlabel('Cluster')
+    ax.set_ylabel(var.replace('_', ' ').title())
+# Add a custom legend for clusters
+handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for cluster, color in cluster_colors.items()]
+# Use `bbox_transform` to position the legend outside the axes on the right side
+fig.legend(handles=handles, title='Clusters', loc='center left', bbox_to_anchor=(1.02, 0.5))
+output_path = 'figs/knn6_cluster_boxplots.png'
+plt.savefig(output_path, dpi=300, bbox_inches='tight')
+plt.show()
 
+fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+# One map
+final_gdf['color'] = final_gdf['cluster_knn6'].map(cluster_colors)
+final_gdf.plot(color=final_gdf['color'], ax=axs[0])
+# Generate custom legend
+handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for color, cluster in zip(colors, unique_clusters)]
+# Title and labels
+axs[0].legend(handles=handles, title="Clusters", loc='lower right')
+axs[0].set_title('KNN Clustering of South African Police Station Areas')
+axs[0].set_xlabel('Longitude')
+axs[0].set_ylabel('Latitude')
+# Bar plot for counts
+df_count = final_gdf.groupby('cluster_knn6').size().reset_index().rename(columns={0: 'count'})
+sns.barplot(x='cluster_knn6', y="count", data=df_count, ax=axs[1], palette=palette)
+axs[1].set_xlabel('Cluster')
+axs[1].set_ylabel('Count')
+# save and show plot
+output_path = 'figs/knn6_map.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
 
-
-
-
-
-
-
-
+# %%
