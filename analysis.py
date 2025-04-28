@@ -313,7 +313,13 @@ plt.show()
 
 
 
+
 #%%
+
+#######################
+### K-means ANALYSIS ###
+#######################
+
 import rasterio
 import rasterio.mask
 from rasterio.mask import mask
@@ -353,9 +359,10 @@ final_gdf['average_altitude'] = final_gdf['geometry'].apply(
     lambda geom: calculate_average_altitude(geom, dem_data, dem_transform))
 
 
-# %% EDA
-######################################
-######################################
+# %% 
+###################################
+##############  EDA  ##############
+###################################
 
 # plot detail of k-complexity in cape town
 # minx, miny = 18.25, -34.17
@@ -472,9 +479,7 @@ output_path = 'figs/crime_map_wholecountry.png'
 plt.savefig(output_path, dpi=300, bbox_inches='tight' )
 plt.show()
 
-
 # Map for the rest of the four columns
-
 fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(20, 15)) 
 for i, col in enumerate(['log10_landscan_population_density', 'log10_building_density', 'road_length', 'average_altitude']):
     ax = axes[i//2, i%2]  # Calculate grid position
@@ -487,6 +492,10 @@ plt.tight_layout()
 output_path = 'figs/descriptive_map.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
+
+
+
+
 
 # %% KNN with individual features
 from sklearn.cluster import KMeans
@@ -758,11 +767,10 @@ plt.show()
 
 
 
-# %% KNN sensitivity analysis
+# %% K-means sensitivity analysis
 # 8 clusters
 kmeans = KMeans(n_clusters=8, random_state=42)
 final_gdf['cluster_knn8'] = kmeans.fit_predict(X_scaled)
-
 # VISUALIZE
 # Color palette
 unique_clusters = sorted(final_gdf['cluster_knn8'].unique())
@@ -807,11 +815,9 @@ plt.savefig(output_path, dpi=300)
 plt.show()
 
 
-
 # 6 clusters
 kmeans = KMeans(n_clusters=6, random_state=42)
 final_gdf['cluster_knn6'] = kmeans.fit_predict(X_scaled)
-
 # VISUALIZE
 # Color palette
 unique_clusters = sorted(final_gdf['cluster_knn6'].unique())
@@ -833,7 +839,6 @@ fig.legend(handles=handles, title='Clusters', loc='center left', bbox_to_anchor=
 output_path = 'figs/knn6_cluster_boxplots.png'
 plt.savefig(output_path, dpi=300, bbox_inches='tight')
 plt.show()
-
 fig, axs = plt.subplots(1, 2, figsize=(12, 5))
 # One map
 final_gdf['color'] = final_gdf['cluster_knn6'].map(cluster_colors)
@@ -855,4 +860,99 @@ output_path = 'figs/knn6_map.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
 
+
+
+
 # %%
+
+from shapely.geometry import Polygon
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Drop rows with NaN values
+final_gdf_nona = final_gdf.dropna()
+final_gdf_nona = final_gdf_nona.to_crs(epsg=32735)
+# Calculate centroids of polygons to obtain representative point (latitude, longitude)
+final_gdf_nona['latitude'] = final_gdf_nona['geometry'].centroid.y
+final_gdf_nona['longitude'] = final_gdf_nona['geometry'].centroid.x
+# Define features
+features = ['log10_building_density', 'k_complexity', 'log10_landscan_population_density',
+            'road_length', 'average_altitude', 'latitude', 'longitude']
+# Get features and target variable
+X = final_gdf_nona[features]
+y = final_gdf_nona['log10_total_crime_per_capita']
+# Standardize features
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+# Split data into train and test sets (80% train, 20% test)
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+
+####################
+###### KNN ##########
+####################
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+
+knn = KNeighborsRegressor(n_neighbors=5)  # You can change the number of neighbors
+knn.fit(X_train, y_train)
+# Predict on the test set
+y_pred = knn.predict(X_test)
+# Evaluate the model
+mse = mean_squared_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+mae = mean_absolute_error(y_test, y_pred)
+print("\nKNeighbors Regressor Performance:")
+print(f"Mean Squared Error: {mse}")
+print(f"R-squared: {r2}")
+print(f"Mean Absolute Error: {mae}")
+
+# Feature importances
+from sklearn.inspection import permutation_importance
+perm_importance = permutation_importance(knn, X_test, y_test, n_repeats=30, random_state=42)
+feature_importances = pd.DataFrame({'Feature': features, 'Importance': perm_importance.importances_mean})
+feature_importances = feature_importances.sort_values(by="Importance", ascending=False)
+print("\nFeature Importances:")
+print(feature_importances)
+
+
+
+#########################
+######Random Forest######
+#########################
+from sklearn.ensemble import RandomForestRegressor
+
+# Train Random Forest Regressor
+rf = RandomForestRegressor(n_estimators=100, random_state=42)
+rf.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred_rf = rf.predict(X_test)
+
+# Evaluate the model
+mse_rf = mean_squared_error(y_test, y_pred_rf)
+r2_rf = r2_score(y_test, y_pred_rf)
+mae_rf = mean_absolute_error(y_test, y_pred_rf)
+
+print("\nRandom Forest Regressor Performance:")
+print(f"Mean Squared Error: {mse_rf}")
+print(f"R-squared: {r2_rf}")
+print(f"Mean Absolute Error: {mae_rf}")
+
+# Feature importances from Random Forest
+feature_importances_rf = pd.DataFrame({'Feature': features, 'Importance': rf.feature_importances_})
+feature_importances_rf = feature_importances_rf.sort_values(by="Importance", ascending=False)
+print("\nRandom Forest Feature Importances:")
+print(feature_importances_rf)
+
+
+
+# %% Plot a tree
+from sklearn.tree import plot_tree
+
+# Visualize the first few layers of the first tree in the Random Forest with larger text
+plt.figure(figsize=(20, 10))
+plot_tree(rf.estimators_[0], feature_names=features, filled=True, rounded=True, fontsize=15, max_depth=2)  # Adjusted fontsize
+plt.title("Partial Decision Tree from the Random Forest (First 2 Layers)", fontsize=24)  # Title text size increased
+plt.savefig("sample_tree.png")
+plt.show()
