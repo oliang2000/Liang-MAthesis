@@ -9,9 +9,11 @@ import seaborn as sns
 
 
 
-
-
 #%% Read in data, make then EPSG 4326
+
+#############################
+##### DATA PROCESSING #######
+#############################
 
 # From MNP
 # block level
@@ -34,9 +36,8 @@ crime_df = pd.read_excel(crime_excelfile_path, sheet_name=1, skiprows=2, usecols
 
 
 
-
-
 #%% CLEAN DATA AND JOIN
+########################
 # Get average total crime for recent 5 years
 sum_crime_df = crime_df.groupby(['Station', 'District', 'Province'], as_index=False).sum(numeric_only=True)
 sum_crime_df['5yr_avg'] = sum_crime_df[['2018-2019', '2019-2020', '2020-2021', '2021-2022', '2022-2023']].mean(axis=1) # april 2022 to march 2023
@@ -62,6 +63,8 @@ points_gdf = points_gdf.to_crs('EPSG:4326')
 # Merge intersections with points_gdf to get the location of the assigned police station
 merged_df = intersections.merge(points_gdf, left_on='police_station', right_on='COMPNT_NM', suffixes=('_block', '_station'))
 
+
+################################
 # Check the distance distribution
 # Calculate the distance between each block and its assigned police station in meters
 from geopy.distance import geodesic
@@ -94,13 +97,6 @@ print(f"R^2: {r_squared}")
 print(f"Correlation: {correlation}")
 print(f"Slope: {slope}")
 print(f"95% CI for slope: {conf_int[0]} to {conf_int[1]}")
-
-
-# Get building count from building level df
-# spatial_join_result = gpd.sjoin(df_bldg_lvl, final_gdf, how='left', op='within')
-# bldg_count = spatial_join_result.groupby('index_right').size()
-# final_gdf['building_count'] = 0
-# final_gdf.loc[building_count.index, 'bldg_count'] = bldg_count.values
 
 
 
@@ -316,9 +312,9 @@ plt.show()
 
 #%%
 
-#######################
-### K-means ANALYSIS ###
-#######################
+#########################################
+#DATA TRANSFORMATION + DESCRIPTIVE STATS
+#########################################
 
 import rasterio
 import rasterio.mask
@@ -359,37 +355,6 @@ final_gdf['average_altitude'] = final_gdf['geometry'].apply(
     lambda geom: calculate_average_altitude(geom, dem_data, dem_transform))
 
 
-# %% 
-###################################
-##############  EDA  ##############
-###################################
-
-# plot detail of k-complexity in cape town
-# minx, miny = 18.25, -34.17
-# maxx, maxy = 18.75, -33.88
-minx, miny = 18.50, -34.10
-maxx, maxy = 18.78, -33.95
-bbox = (minx, miny, maxx, maxy)
-
-# Filter the GeoDataFrame using clip
-gdf_cape_town = gpd.clip(gdf_block_info, mask=bbox)
-
-# Plot the GeoDataFrame
-fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-gdf_cape_town.plot(column='k_complexity', ax=ax, legend=True, cmap='Greens',
-                   legend_kwds={'label': "K-Complexity",
-                                'orientation': "vertical",
-                                'shrink': 0.5,
-                                'aspect': 15})
-plt.title('Blocks in Cape Town Colored by K-Complexity')
-plt.xlabel('Longitude')
-plt.ylabel('Latitude')
-output_path = 'figs/cape_town_kcomp.png'
-plt.savefig(output_path, dpi=300)
-plt.show()
-
-
-#%% DATA TRANSFORMATION + DESCRIPTIVE STATS
 # transform data
 final_gdf['building_density'] = final_gdf['building_count'] / final_gdf['block_area_km2']
 final_gdf['log10_building_density'] = np.log10(final_gdf['building_density'])
@@ -398,17 +363,35 @@ final_gdf['log10_total_crime_per_capita'] = np.log10(final_gdf['total_crime_per_
 final_gdf['log10_landscan_population_density'] = np.log10(final_gdf['landscan_population'] / final_gdf['block_area_km2'])
 final_gdf.describe()
 
+
+#%% 
+
+###################################
+##############  EDA  ##############
+###################################
+
 # Plot histograms for each column
 variables = ['log10_building_density', 'k_complexity', 'log10_landscan_population_density', 
-'road_length', 'average_altitude', 'log10_total_crime_per_capita']
-fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 8))  # 3 rows, 2 columns to accommodate 5 histograms
+             'road_length', 'average_altitude', 'log10_total_crime_per_capita']
+feature_labels = {
+    'log10_building_density': 'Log10 Building\nDensity',
+    'k_complexity': 'K-Complexity',
+    'log10_landscan_population_density': 'Log10 LandScan Population Density',
+    'road_length': 'Road Length',
+    'average_altitude': 'Average Altitude',
+    'latitude': 'Latitude',
+    'longitude': 'Longitude',
+    'log10_total_crime_per_capita': 'Log10 Total Crime Per Capita'
+}
+fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(15, 8))  # 2 rows, 3 columns to accommodate 6 histograms
 for i, col in enumerate(variables):
     ax = axes[i//3, i%3]  # Calculate grid position
     ax.hist(final_gdf[col].dropna(), bins=30, edgecolor='k', alpha=0.7)
-    ax.set_title(f'Histogram of {col}')
-    ax.set_xlabel(col)
-    ax.set_ylabel('Frequency')
-plt.tight_layout()
+    ax.set_xlabel(feature_labels[col], fontsize=16)  # Use feature labels for x-axis labels
+    ax.set_ylabel('Frequency', fontsize=16)  # Increase y-axis label font size
+# Set a title for the entire figure
+fig.suptitle('Histograms of All Variables', fontsize=20)
+plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust layout to make space for the suptitle
 output_path = 'figs/descriptive_histogram.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
@@ -427,23 +410,43 @@ plt.savefig(output_path, dpi=300)
 plt.show()
 
 
+# plot detail of k-complexity in cape town
+minx, miny = 18.50, -34.10
+maxx, maxy = 18.78, -33.95
+bbox = (minx, miny, maxx, maxy)
+# Filter the GeoDataFrame using clip
+gdf_cape_town = gpd.clip(gdf_block_info, mask=bbox)
+# Plot the GeoDataFrame
+fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+gdf_cape_town.plot(column='k_complexity', ax=ax, legend=True, cmap='Greens',
+                   legend_kwds={'label': "K-Complexity",
+                                'orientation': "vertical",
+                                'shrink': 0.5,
+                                'aspect': 15})
+plt.title('Blocks in Cape Town Colored by K-Complexity')
+plt.xlabel('Longitude')
+plt.ylabel('Latitude')
+output_path = 'figs/cape_town_kcomp.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
+
+
 # crime rate map
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib.patches import Rectangle
 # Define the bounding boxes
-bbox_main = (16, -35.5, 32, -22) #Whole Country
+bbox_main = (16, -35.5, 32, -22) # Whole Country
 bbox_cape_town = (18, -34.5, 19.3, -33.7)
 bbox_johannesburg = (27.5, -26.5, 28.2, -25.9)
-#https://en.m.wikipedia.org/wiki/File:Greater_Johannesburg_OpenStreetMap_small.svg
 # Create the figure and main axis
 fig, ax_main = plt.subplots(1, 1, figsize=(15, 15))
 # Plot the main GeoDataFrame with the full map
 gpd.clip(final_gdf[final_gdf["landscan_population"] > 1000], mask=bbox_main).plot(
     column='log10_total_crime_per_capita', ax=ax_main, cmap='Blues',
     vmin=0, vmax=0.3, legend=False)
-ax_main.set_title('South Africa Police Areas Colored by log10(Crime Rate), averaged 2018-2022', fontsize=20)
-ax_main.set_xlabel('Longitude', fontsize=15)
-ax_main.set_ylabel('Latitude', fontsize=15)
+ax_main.set_title('South Africa Police Areas Colored by log10(Crime Rate), averaged 2018-2022', fontsize=40, pad=50)
+ax_main.set_xlabel('Longitude', fontsize=30)
+ax_main.set_ylabel('Latitude', fontsize=30)
 # Add gray bounding boxes for Cape Town and Johannesburg
 rect_cape_town = Rectangle((bbox_cape_town[0], bbox_cape_town[1]),
                            bbox_cape_town[2] - bbox_cape_town[0],
@@ -460,13 +463,13 @@ ax_cape_town = inset_axes(ax_main, width="90%", height="90%", loc='center left',
                           bbox_to_anchor=(-0.75, 0.0, 0.45, 0.45), bbox_transform=ax_main.transAxes)
 gpd.clip(final_gdf[final_gdf["landscan_population"] > 1000], mask=bbox_cape_town).plot(
     column='log10_total_crime_per_capita', ax=ax_cape_town, cmap='Blues', vmin=0, vmax=0.3, legend=False)
-ax_cape_town.set_title('Cape Town', fontsize=15)
+ax_cape_town.set_title('Cape Town', fontsize=30, pad=20)
 # Create inset axes for Johannesburg outside of the main map (right side)
 ax_johannesburg = inset_axes(ax_main, width="90%", height="90%", loc='center right',
                              bbox_to_anchor=(1.3, 0.5, 0.45, 0.45), bbox_transform=ax_main.transAxes)
 gpd.clip(final_gdf[final_gdf["landscan_population"] > 1000], mask=bbox_johannesburg).plot(
     column='log10_total_crime_per_capita', ax=ax_johannesburg, cmap='Blues', vmin=0, vmax=0.3, legend=False)
-ax_johannesburg.set_title('Johannesburg', fontsize=14)
+ax_johannesburg.set_title('Johannesburg', fontsize=30, pad=20)
 # Create a thicker shared colorbar for the entire figure with larger font
 cax = inset_axes(ax_main, width="5%", height="100%", loc='lower left',
                  bbox_to_anchor=(1.05, 0.0, 0.05, 1.0), bbox_transform=ax_main.transAxes, borderpad=0)
@@ -476,18 +479,22 @@ cbar = fig.colorbar(sm, cax=cax)
 cbar.set_label('K-Complexity', size=20)
 cbar.ax.tick_params(labelsize=15)
 output_path = 'figs/crime_map_wholecountry.png'
-plt.savefig(output_path, dpi=300, bbox_inches='tight' )
+plt.savefig(output_path, dpi=200, bbox_inches='tight')
 plt.show()
 
 # Map for the rest of the four columns
-fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(20, 15)) 
-for i, col in enumerate(['log10_landscan_population_density', 'log10_building_density', 'road_length', 'average_altitude']):
+fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(20, 15))
+titles = [ "Population Density (Log Scale)", "Building Density (Log Scale)", "Total Road Length", "Average Altitude" ]
+for i, (col, title) in enumerate(zip(['log10_landscan_population_density', 'log10_building_density', 'road_length', 'average_altitude'], titles)):
     ax = axes[i//2, i%2]  # Calculate grid position
-    final_gdf.plot(column=col, ax=ax, legend=True, cmap='Blues', 
-                   legend_kwds={'shrink': 0.5}, 
-                   missing_kwds={"color": "lightgrey", "edgecolor": "red", "hatch": "///"})
-    ax.set_title(f'Map of {col}')
+    cmap = final_gdf.plot(column=col, ax=ax, legend=True, cmap='Blues', 
+                          legend_kwds={'shrink': 0.5}, 
+                          missing_kwds={"color": "lightgrey", "edgecolor": "red", "hatch": "///"}).get_figure().get_axes()[-1]
+    # Set title with larger font size
+    ax.set_title(title, fontsize=25)
     ax.axis('off')
+    # Adjust colorbar label font size
+    cmap.tick_params(labelsize=18)
 plt.tight_layout()
 output_path = 'figs/descriptive_map.png'
 plt.savefig(output_path, dpi=300)
@@ -498,14 +505,19 @@ plt.show()
 
 
 # %% KNN with individual features
+#######################
+### K-means ANALYSIS ###
+#######################
+
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-
 features = ['log10_building_density', 'k_complexity', 'log10_landscan_population_density', 'road_length', 'average_altitude']
 X = final_gdf[features]
 # Standardize features
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
+
+#######################
 # Find the optimal number of clusters using the Elbow method
 k_range = range(1, 21)
 inertia_values = []
@@ -515,16 +527,17 @@ for k in k_range:
     inertia_values.append(kmeans.inertia_)
 plt.figure(figsize=(10, 6))
 plt.plot(k_range, inertia_values, marker='o')
-plt.title('Elbow Plot for K-Means Clustering')
-plt.xlabel('Number of Clusters (k)')
-plt.ylabel('Inertia')
-plt.xticks(k_range)
+plt.title('Elbow Plot for K-Means Clustering', fontsize=18, pad=20)
+plt.xlabel('Number of Clusters (k)', fontsize=15)
+plt.ylabel('Inertia', fontsize=15)
+plt.xticks(k_range, fontsize=12)
+plt.yticks(fontsize=12)
+plt.grid(True)  # Ensure this is before plt.savefig()
 output_path = 'figs/elbow_plot.png'
 plt.savefig(output_path, dpi=300)
-plt.grid(True)
 plt.show()
 
-
+#######################
 # Choose 7 clusters
 kmeans = KMeans(n_clusters=7, random_state=42)
 final_gdf['cluster_knn7'] = kmeans.fit_predict(X_scaled)
@@ -532,26 +545,37 @@ final_gdf['cluster_knn7'] = kmeans.fit_predict(X_scaled)
 # VISUALIZE
 # Color palette
 import matplotlib.patches as mpatches
+import textwrap
+
+plt.rcParams.update({
+    'font.size': 14,       # general text size
+    'axes.titlesize': 16,  # title size
+    'axes.labelsize': 14,  # x and y label size
+    'legend.fontsize': 12, # legend font size for items
+    'xtick.labelsize': 12, # x tick label size
+    'ytick.labelsize': 12  # y tick label size
+})
+# Setup your dataset and variables
 unique_clusters = sorted(final_gdf['cluster_knn7'].unique())
 colors = plt.cm.tab20(range(len(unique_clusters)))[:len(unique_clusters)]
 cluster_colors = {cluster: colors[i % len(colors)] for i, cluster in enumerate(unique_clusters)}
-
-# Plot the box plot of all 5 dependent variables, 1 independent variable for all clusters
 palette = {str(cluster): color for cluster, color in cluster_colors.items()}
-fig, axes = plt.subplots(2, 3, figsize=(18, 12), tight_layout=True)
-# Plot each variable in a separate subplot
+fig, axes = plt.subplots(2, 3, figsize=(18, 12))
 for ax, var in zip(axes.flatten(), variables):
     sns.boxplot(x='cluster_knn7', y=var, data=final_gdf, ax=ax, palette=palette)
-    ax.set_title(f'Box Plot of {var.replace("_", " ").title()} for Each Cluster')
-    ax.set_xlabel('Cluster')
-    ax.set_ylabel(var.replace('_', ' ').title())
-# Add a custom legend for clusters
+    ax.set_xlabel('Cluster', fontsize=16)
+    ax.set_ylabel(var.replace('_', ' ').title(), fontsize=16)
+title = 'Box Plot Analysis of All Variables Across Clusters'
+wrapped_title = "\n".join(textwrap.wrap(title, width=60))
+fig.suptitle(wrapped_title, fontsize=25)
+plt.subplots_adjust(top=0.92)  # Adjust the top of the subplot to make room for the title
 handles = [mpatches.Patch(color=color, label=f'Cluster {cluster}') for cluster, color in cluster_colors.items()]
-# Use `bbox_transform` to position the legend outside the axes on the right side
-fig.legend(handles=handles, title='Clusters', loc='center left', bbox_to_anchor=(1.02, 0.5))
+legend = fig.legend(handles=handles, title='Clusters', loc='center', bbox_to_anchor=(1.02, 0.5),
+                    fontsize=14, title_fontsize=16)
 output_path = 'figs/knn7_cluster_boxplots.png'
 plt.savefig(output_path, dpi=300, bbox_inches='tight')
 plt.show()
+
 
 # map
 fig, axs = plt.subplots(1, 2, figsize=(12, 5))
@@ -599,7 +623,7 @@ cluster_summary = final_gdf.groupby('cluster_knn7')[features].agg(['mean', 'std'
 print(cluster_summary)
 
 # Check the category (urban / non-urban) of each cluster
-intersections = intersections.merge(final_gdf[['cluster_knn5', 'Station']], left_on='police_station', right_on='Station', how='left')
+intersections = intersections.merge(final_gdf[['cluster_knn7', 'Station']], left_on='police_station', right_on='Station', how='left')
 summary_table = intersections.groupby(['cluster_knn5', 'class_urban_hierarchy']).size().unstack(fill_value=0)
 
 
@@ -713,7 +737,7 @@ esdaplot.lisa_cluster(lisa_queen, final_gdf, p=0.05, ax=axs[1])
 axs[1].set_title('LISA cluster map, Queen Neighbors')
 
 # Plot 3: KNN neighbors
-w_knn =x KNN.from_dataframe(final_gdf, k=5)
+w_knn = KNN.from_dataframe(final_gdf, k=5)
 w_knn.transform = "R"  # Row-standardization
 lisa_knn = esda.moran.Moran_Local(final_gdf["log10_total_crime_per_capita"], w_knn)
 esdaplot.lisa_cluster(lisa_knn, final_gdf, p=0.05, ax=axs[2])
@@ -865,6 +889,10 @@ plt.show()
 
 # %%
 
+#################################
+###### MACHINE LEARNING ##########
+#################################
+
 from shapely.geometry import Polygon
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -878,6 +906,16 @@ final_gdf_nona['longitude'] = final_gdf_nona['geometry'].centroid.x
 # Define features
 features = ['log10_building_density', 'k_complexity', 'log10_landscan_population_density',
             'road_length', 'average_altitude', 'latitude', 'longitude']
+feature_labels = {
+    'log10_building_density': 'Log10 Building\nDensity',
+    'k_complexity': 'K Complexity',
+    'log10_landscan_population_density': 'Log10 LandScan\nPopulation Density',
+    'road_length': 'Road Length',
+    'average_altitude': 'Average Altitude',
+    'latitude': 'Latitude',
+    'longitude': 'Longitude',
+    'log10_total_crime_per_capita': 'Log10 Total\nCrime Per Capita'
+}
 # Get features and target variable
 X = final_gdf_nona[features]
 y = final_gdf_nona['log10_total_crime_per_capita']
@@ -888,11 +926,47 @@ X_scaled = scaler.fit_transform(X)
 X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
 
-####################
+###### Correlation Analysis ######
+# Create a mapping of feature names to labels
+correlation_matrix = final_gdf_nona[features + ['log10_total_crime_per_capita']].corr()
+correlation_matrix.rename(index=feature_labels, columns=feature_labels, inplace=True)
+# Create a mask for the upper triangle
+mask = np.triu(np.ones_like(correlation_matrix, dtype=bool), k=1)
+#plot
+plt.figure(figsize=(10, 8))
+# Create the heatmap with the mask applied, centering the colormap at 0
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt=".2f", annot_kws={"size": 15}, center=0, mask=mask)
+plt.yticks(fontsize=15)
+plt.xticks(fontsize=15)
+plt.title('Lower Triangle Correlation Matrix', fontsize=20, pad=40)
+plt.tight_layout()
+plt.savefig('figs/lower_triangle_corr_matrix.png', dpi=300)
+plt.show()
+
+
 ###### KNN ##########
-####################
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+# Check the optimal number of neighbors
+neighbor_range = range(1, 21)
+mse_values = []
+for n_neighbors in neighbor_range:
+    knn = KNeighborsRegressor(n_neighbors=n_neighbors)
+    knn.fit(X_train, y_train)
+    y_pred = knn.predict(X_test)
+    mse = mean_squared_error(y_test, y_pred)
+    mse_values.append(mse)
+# Plot the error vs. number of neighbors
+plt.figure(figsize=(10, 6))
+plt.plot(neighbor_range, mse_values, marker='o')
+plt.title('Mean Squared Error vs. Number of Neighbors')
+plt.xlabel('Number of Neighbors')
+plt.ylabel('Mean Squared Error')
+plt.xticks(neighbor_range)
+plt.grid(True)
+output_path = 'figs/knn_mse_test.png'
+plt.savefig(output_path, dpi=300)
+plt.show()
 
 knn = KNeighborsRegressor(n_neighbors=5)  # You can change the number of neighbors
 knn.fit(X_train, y_train)
@@ -917,28 +991,22 @@ print(feature_importances)
 
 
 
-#########################
-######Random Forest######
-#########################
+###### Random Forest ######
 from sklearn.ensemble import RandomForestRegressor
 
 # Train Random Forest Regressor
 rf = RandomForestRegressor(n_estimators=100, random_state=42)
 rf.fit(X_train, y_train)
-
 # Predict on the test set
 y_pred_rf = rf.predict(X_test)
-
 # Evaluate the model
 mse_rf = mean_squared_error(y_test, y_pred_rf)
 r2_rf = r2_score(y_test, y_pred_rf)
 mae_rf = mean_absolute_error(y_test, y_pred_rf)
-
 print("\nRandom Forest Regressor Performance:")
 print(f"Mean Squared Error: {mse_rf}")
 print(f"R-squared: {r2_rf}")
 print(f"Mean Absolute Error: {mae_rf}")
-
 # Feature importances from Random Forest
 feature_importances_rf = pd.DataFrame({'Feature': features, 'Importance': rf.feature_importances_})
 feature_importances_rf = feature_importances_rf.sort_values(by="Importance", ascending=False)
@@ -954,5 +1022,62 @@ from sklearn.tree import plot_tree
 plt.figure(figsize=(20, 10))
 plot_tree(rf.estimators_[0], feature_names=features, filled=True, rounded=True, fontsize=15, max_depth=2)  # Adjusted fontsize
 plt.title("Partial Decision Tree from the Random Forest (First 2 Layers)", fontsize=24)  # Title text size increased
-plt.savefig("sample_tree.png")
+plt.savefig("figs/sample_tree.png")
 plt.show()
+
+# %%
+
+## more analysis ##
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Visualize Feature Importances: KNN
+def plot_feature_importances(feature_importances, model_name):
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='Importance', y='Feature', data=feature_importances, palette='viridis')
+    plt.title(f'{model_name} Feature Importances')
+    plt.xlabel('Importance')
+    plt.ylabel('Feature')
+    plt.show()
+
+print("\nVisualizing KNN Feature Importances:")
+plot_feature_importances(feature_importances, 'KNN')
+
+# Visualize Feature Importances: Random Forest
+print("\nVisualizing Random Forest Feature Importances:")
+plot_feature_importances(feature_importances_rf, 'Random Forest')
+
+
+
+
+# %%
+
+# Partial Dependence Plot using RandomForest
+from sklearn.inspection import partial_dependence, plot_partial_dependence
+
+def plot_partial_dependence_rf(model, features, feature_names, X_train):
+    fig, ax = plt.subplots(figsize=(15, 15))
+    plot_partial_dependence(model, X_train, features, feature_names=feature_names, ax=ax)
+    plt.show()
+
+print("\nPartial Dependence Plot Analysis:")
+plot_partial_dependence_rf(rf, [0, 1, 2, 3, 4], features, X_train)
+
+
+# Permutation Importance with Interaction
+def plot_permutation_importance_with_interaction(model, X_test, y_test):
+    from sklearn.inspection import permutation_importance
+
+    # Perform permutation importance with interactions
+    perm_importance_interactions = permutation_importance(model, X_test, y_test, n_repeats=30, random_state=42)
+    feature_importance_interactions = pd.DataFrame({
+        'Feature': features,
+        'Importance': perm_importance_interactions.importances_mean
+    }).sort_values(by='Importance', ascending=False)
+
+    print("\nPermutation Importance with Interaction:")
+    plot_feature_importances(feature_importance_interactions, 'With Interaction')
+
+plot_permutation_importance_with_interaction(rf, X_test, y_test)
