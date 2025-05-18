@@ -74,16 +74,21 @@ merged_df['distance_to_station'] = merged_df.apply(
         (row['geometry_station'].centroid.y, row['geometry_station'].centroid.x)
     ).meters,
     axis=1)
+
 # Plot k_complexity vs. distance to assigned police station
 plt.figure(figsize=(10, 6))
 plt.scatter(merged_df['distance_to_station'], merged_df['k_complexity'], alpha=0.6)
-plt.xlabel('Distance to Assigned Police Station (meters)')
-plt.ylabel('K-complexity')
-plt.title('K-complexity vs. Distance to Assigned Police Station')
+plt.xlabel('Distance to Assigned Police Station (meters)', fontsize=14)
+plt.ylabel('K-complexity', fontsize=14)
+plt.title('K-complexity vs. Distance to Assigned Police Station', fontsize=16, pad=15)
 plt.grid(True)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
 output_path = 'figs/corr_k_dist.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
+
+
 # Calculate the correlation between k_complexity and distance_to_station
 y = merged_df['k_complexity']
 X = sm.add_constant(merged_df['distance_to_station'])
@@ -599,25 +604,6 @@ output_path = 'figs/knn7_map.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
 
-# Clusters highlighted individually
-# fig, axes = plt.subplots(2, 4, figsize=(18, 12), sharex=True, sharey=True)
-# axes = axes.flatten()
-# # Plot each cluster in its own subplot
-# for i, cluster in enumerate(unique_clusters):
-#     ax = axes[i]
-#     final_gdf.plot(color='lightgray', ax=ax)  # Plot all polygons in light gray
-#     final_gdf[final_gdf['cluster_knn5'] == cluster].plot(color=cluster_colors[cluster], ax=ax)  # Highlight the current cluster
-#     ax.set_title(f'Cluster {cluster}')
-#     ax.set_xlabel('Longitude')
-#     ax.set_ylabel('Latitude')
-# # Hide any unused subplots
-# for j in range(i + 1, len(axes)):
-#     axes[j].axis('off')
-# plt.tight_layout()
-# output_path = 'figs/knn7_result2.png'
-# plt.savefig(output_path, dpi=300)
-# plt.show()
-
 # Summary stats
 cluster_summary = final_gdf.groupby('cluster_knn7')[features].agg(['mean', 'std'])
 print(cluster_summary)
@@ -651,9 +637,93 @@ plt.savefig(output_path, dpi=300)
 plt.show()
 
 
+# %% Crime and k-complexity correlation by cluster
+from scipy.stats import linregress
+# Assuming final_gdf is already defined and has the necessary columns
+n_clusters = 7
+n_cols = 3
+n_rows = (n_clusters + n_cols - 1) // n_cols
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4 * n_rows))
+axes = axes.flatten()
+# Prepare common legend handles
+scatter_handle = mpatches.Patch(color='lightblue', label='Data Points')
+line_handle = mpatches.Patch(color='gray', label='Linear Regression')
+for cluster_id in range(n_clusters):
+    ax = axes[cluster_id]
+    cluster_data = final_gdf[final_gdf["cluster_knn7"] == cluster_id]
+    x = cluster_data['k_complexity']
+    y = cluster_data['log10_total_crime_per_capita']
+    if len(x) < 2:
+        ax.set_title(f"Cluster {cluster_id} (Insufficient data)")
+        continue
+    # Normalize
+    x_norm = (x - np.mean(x)) / np.std(x)
+    y_norm = (y - np.mean(y)) / np.std(y)
+    # Linear regression
+    slope, intercept, r_value, p_value, std_err = linregress(x_norm, y_norm)
+    line = slope * x_norm + intercept
+    t_value = 1.96
+    ci = t_value * std_err
+    # Scatter and regression line
+    ax.scatter(x_norm, y_norm, color='lightblue', alpha=0.7)
+    ax.plot(x_norm, line, color='gray')
+    # Text box with stats
+    textstr = '\n'.join((
+        r'$R^2=%.2f$' % (r_value**2, ),
+        r'$r=%.2f$' % (r_value, ),
+        r'$slope=%.2f \pm %.2f$' % (slope, ci)))
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    ax.text(0.95, 0.95, textstr, transform=ax.transAxes, fontsize=12,
+            verticalalignment='top', horizontalalignment='right', bbox=props)
+    ax.set_title(f"Cluster {cluster_id}")
+    ax.set_xlabel("Normalized k_complexity")
+    ax.set_ylabel("Normalized log10(total\ncrime per capita)")
+for i in range(n_clusters, len(axes)): #hide unused subplots
+    fig.delaxes(axes[i])
+# Add a single legend outside the grid
+fig.legend(handles=[scatter_handle, line_handle], loc='lower center', ncol=2, fontsize=12)
+fig.tight_layout(rect=[0, 0.05, 1, 1])  # leave space for legend
+# Save and show
+plt.savefig('figs/knn7_all_clusters_lr.png', dpi=300)
+plt.show()
 
+# %% T-test of difference in crime between each cluster with cluster 2
+from scipy.stats import ttest_ind
+# Define Cluster 2 data
+cluster_2_data = final_gdf.loc[final_gdf["cluster_knn7"] == 2, "log10_total_crime_per_capita"]
 
+# Store T-test results
+results = []
 
+# Loop through all unique clusters other than Cluster 2
+for cluster in final_gdf["cluster_knn7"].unique():
+    if cluster != 2:
+        # Extract data for the current cluster
+        other_cluster_data = final_gdf.loc[final_gdf["cluster_knn7"] == cluster, "log10_total_crime_per_capita"]
+        
+        # Perform independent T-test
+        t_stat, p_value = ttest_ind(cluster_2_data, other_cluster_data, equal_var=False)
+        
+        # Append results formatted to scientific notation with 5 significant digits
+        results.append({
+            "Comparison": f"Cluster 2 vs Cluster {int(cluster)}",
+            "t-Statistic": f"{t_stat:.5e}",
+            "p-Value": f"{p_value:.5e}"
+        })
+
+# Convert results to a DataFrame
+t_test_results_df = pd.DataFrame(results)
+
+# Print results in table format
+print("\nT-Test Results (Cluster 2 vs Other Clusters):")
+print(t_test_results_df)
+
+# Generate LaTeX code for the table
+latex_code = t_test_results_df.to_latex(index=False, escape=False,
+                                        caption="T-Test Results: Cluster 2 vs Other Clusters",
+                                        label="tab:t_test_results")
+print("\nLaTeX Code for Table:")
+print(latex_code)
 # %%
 # LISA: local moran's i
 # https://geographicdata.science/book/notebooks/07_local_autocorrelation.html
@@ -750,10 +820,7 @@ plt.savefig(output_path, dpi=300)
 plt.show()
 
 
-
-
-# Check within cluster 2
-
+# Check within each cluster to see k-complexity vs. crime
 from scipy.stats import linregress
 # Ensure final_gdf is defined and contains the required columns
 final_gdf_cluster2 = final_gdf[final_gdf["cluster_knn7"] == 2]
@@ -785,10 +852,53 @@ ax.text(0.95, 0.95, textstr, transform=ax.transAxes, fontsize=10,
 ax.set_xlabel('Normalized k_complexity')
 ax.set_ylabel('Normalized log10_total_crime_per_capita')
 # Show the plot
-output_path = 'figs/xxx.png'
+output_path = 'figs/knn7_cluster2_lr.png'
 plt.savefig(output_path, dpi=300)
 plt.show()
 
+
+# Combine clusters 2-5
+import matplotlib.pyplot as plt
+from scipy.stats import linregress
+import seaborn as sns
+# Filter clusters 2–5
+subset = final_gdf[final_gdf["cluster_knn7"].isin([2, 3, 4, 5])]
+x = subset['k_complexity']
+y = subset['log10_total_crime_per_capita']
+x_norm = (x - x.mean()) / x.std()  # Normalize x
+y_norm = (y - y.mean()) / y.std()  # Normalize y
+
+# Linear regression
+slope, intercept, r_value, p_value, std_err = linregress(x_norm, y_norm)
+line = slope * x_norm + intercept  # Use normalized x for the regression line
+ci = 1.96 * std_err  # 95% confidence interval
+# get right colors
+colors = subset['cluster_knn7'].map(lambda c: palette[str(c)])
+# Plot
+fig, ax = plt.subplots(figsize=(12, 6))  # wider figure
+scatter = ax.scatter(x, y_norm, c=colors, alpha=0.7)
+ax.plot(x, line, color='gray', alpha=0.5, linewidth=2, label='Regression Line')
+# Stats box
+textstr = rf'$R^2 = {r_value**2:.2f}$' + '\n' + rf'$slope = {slope:.2f} \pm {ci:.2f}$'
+props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+ax.text(0.95, 0.95, textstr, transform=ax.transAxes, fontsize=12,
+        verticalalignment='top', horizontalalignment='right', bbox=props)
+# Labels and title
+ax.set_xlabel('K-complexity', fontsize=14)
+ax.set_ylabel('Normalized log10(total_crime_per_capita)', fontsize=14)
+ax.set_title('Clusters 2–5: Regression of Normalized Crime on K-complexity', fontsize=16, pad=15)
+ax.tick_params(axis='both', labelsize=12)
+# Legend outside
+handles = [
+    plt.Line2D([], [], marker='o', linestyle='', color=cluster_colors[c], label=f'Cluster {c}')
+    for c in [2, 3, 4, 5]]
+handles.append(plt.Line2D([], [], color='lightblue', alpha=0.5, label='Regression Line'))
+ax.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=12)
+# Save and show
+plt.tight_layout()
+output_path = 'figs/knn7_clusters2to5_combined.png'
+plt.savefig(output_path, dpi=300, bbox_inches='tight')
+plt.show()
 
 
 # %% K-means sensitivity analysis
@@ -887,6 +997,13 @@ plt.show()
 
 
 
+
+
+
+
+
+
+
 # %%
 
 #################################
@@ -944,56 +1061,62 @@ plt.savefig('figs/lower_triangle_corr_matrix.png', dpi=300)
 plt.show()
 
 
+# %%
 ###### KNN ##########
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.inspection import permutation_importance
+import pandas as pd
+
 # Check the optimal number of neighbors
 neighbor_range = range(1, 21)
 mse_values = []
+
 for n_neighbors in neighbor_range:
     knn = KNeighborsRegressor(n_neighbors=n_neighbors)
     knn.fit(X_train, y_train)
     y_pred = knn.predict(X_test)
     mse = mean_squared_error(y_test, y_pred)
     mse_values.append(mse)
-# Plot the error vs. number of neighbors
-plt.figure(figsize=(10, 6))
-plt.plot(neighbor_range, mse_values, marker='o')
-plt.title('Mean Squared Error vs. Number of Neighbors')
-plt.xlabel('Number of Neighbors')
-plt.ylabel('Mean Squared Error')
-plt.xticks(neighbor_range)
-plt.grid(True)
-output_path = 'figs/knn_mse_test.png'
-plt.savefig(output_path, dpi=300)
-plt.show()
 
-knn = KNeighborsRegressor(n_neighbors=5)  # You can change the number of neighbors
+# Evaluate KNN with a chosen number of neighbors
+knn = KNeighborsRegressor(n_neighbors=5)  # Change this as needed
 knn.fit(X_train, y_train)
+
 # Predict on the test set
 y_pred = knn.predict(X_test)
-# Evaluate the model
+
+# Compute evaluation metrics
 mse = mean_squared_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
 mae = mean_absolute_error(y_test, y_pred)
-print("\nKNeighbors Regressor Performance:")
-print(f"Mean Squared Error: {mse}")
-print(f"R-squared: {r2}")
-print(f"Mean Absolute Error: {mae}")
 
-# Feature importances
-from sklearn.inspection import permutation_importance
+# Print model evaluation metrics in LaTeX format
+metrics_df = pd.DataFrame({
+    "Metric": ["Mean Squared Error", "R-squared", "Mean Absolute Error"],
+    "Value": [mse, r2, mae]
+})
+
+latex_metrics_table = metrics_df.to_latex(index=False, float_format="%.6f", caption="KNN Regression Performance Metrics", label="tab:knn_metrics")
+print("\nLaTeX Code for KNN Metrics Table:")
+print(latex_metrics_table)
+
+# Feature importances using permutation importance
 perm_importance = permutation_importance(knn, X_test, y_test, n_repeats=30, random_state=42)
 feature_importances = pd.DataFrame({'Feature': features, 'Importance': perm_importance.importances_mean})
 feature_importances = feature_importances.sort_values(by="Importance", ascending=False)
-print("\nFeature Importances:")
-print(feature_importances)
+
+# Print feature importance in LaTeX format
+latex_feature_importance_table = feature_importances.to_latex(index=False, float_format="%.6f", caption="Feature Importances from Permutation Importance", label="tab:feature_importance")
+print("\nLaTeX Code for Feature Importance Table:")
+print(latex_feature_importance_table)
 
 
 
-###### Random Forest ######
+# Random forest
 from sklearn.ensemble import RandomForestRegressor
-
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+import pandas as pd
 # Train Random Forest Regressor
 rf = RandomForestRegressor(n_estimators=100, random_state=42)
 rf.fit(X_train, y_train)
@@ -1003,15 +1126,26 @@ y_pred_rf = rf.predict(X_test)
 mse_rf = mean_squared_error(y_test, y_pred_rf)
 r2_rf = r2_score(y_test, y_pred_rf)
 mae_rf = mean_absolute_error(y_test, y_pred_rf)
-print("\nRandom Forest Regressor Performance:")
-print(f"Mean Squared Error: {mse_rf}")
-print(f"R-squared: {r2_rf}")
-print(f"Mean Absolute Error: {mae_rf}")
+# Print Random Forest metrics in LaTeX
+metrics_rf_df = pd.DataFrame({
+    "Metric": ["Mean Squared Error", "R-squared", "Mean Absolute Error"],
+    "Value": [mse_rf, r2_rf, mae_rf]
+})
+latex_metrics_rf_table = metrics_rf_df.to_latex(index=False, float_format="%.6f",
+                                                caption="Random Forest Regression Metrics",
+                                                label="tab:rf_metrics")
+print("\nLaTeX Code for Random Forest Metrics:")
+print(latex_metrics_rf_table)
 # Feature importances from Random Forest
 feature_importances_rf = pd.DataFrame({'Feature': features, 'Importance': rf.feature_importances_})
 feature_importances_rf = feature_importances_rf.sort_values(by="Importance", ascending=False)
-print("\nRandom Forest Feature Importances:")
-print(feature_importances_rf)
+
+# Print Random Forest feature importances in LaTeX
+latex_feature_importance_rf_table = feature_importances_rf.to_latex(index=False, float_format="%.6f",
+                                                                    caption="Feature Importances from Random Forest",
+                                                                    label="tab:rf_feature_importance")
+print("\nLaTeX Code for Random Forest Feature Importance Table:")
+print(latex_feature_importance_rf_table)
 
 
 
